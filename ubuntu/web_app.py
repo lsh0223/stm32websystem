@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# ★★★ 修改点1：引入 jsonify
-from flask import Flask, render_template, redirect, url_for, request, jsonify
+from flask import Flask, render_template, redirect, url_for, request
 import pymysql
 import paho.mqtt.client as mqtt
 from datetime import datetime, date
 
-# ========= MQTT 配置 =========
+# ========= MQTT 配置 (本地) =========
 MQTT_BROKER = "127.0.0.1" 
 MQTT_PORT   = 1883
 MQTT_CLIENT_ID = "web_admin"
@@ -66,10 +65,6 @@ def load_seats():
         r["light_text"] = "开启" if r["light_status"] else "关闭"
         r["human_text"] = "有人" if r["human_status"] else "无人"
         
-        # 预先处理好分钟数，方便前端直接显示
-        current_sec = r.get("current_sec", 0) or 0
-        r["duration_min"] = current_sec // 60
-
         if r.get("current_user_name"):
             r["seat_name_display"] = f"{r['seat_name']} - {r['current_user_name']}"
             r["user_info_display"] = f"卡号: {r['current_card_uid']}"
@@ -94,7 +89,6 @@ def load_seats():
         r["is_offline"]     = is_offline
         r["is_maintenance"] = is_maint
 
-        # 状态文本和颜色类
         if is_offline:
             r["status_text"]  = "离线"
             r["status_class"] = "badge bg-dark"
@@ -151,18 +145,6 @@ def index():
     seats = load_seats()
     return render_template("index.html", seats=seats)
 
-# ★★★ 修改点2：新增 API 接口，供前端 JS 轮询 ★★★
-@app.route("/api/seats")
-def api_seats():
-    seats = load_seats()
-    # datetime 对象不能直接被 jsonify 序列化，需要转字符串
-    for r in seats:
-        if isinstance(r.get("last_update"), datetime):
-            r["last_update"] = r["last_update"].strftime("%Y-%m-%d %H:%M:%S")
-        elif r.get("last_update") is None:
-            r["last_update"] = "未知"
-    return jsonify(seats)
-
 @app.route("/seat/<device_id>/<action>")
 def seat_action(device_id, action):
     if action in ("maint_on", "maint_off"):
@@ -180,7 +162,6 @@ def seat_action(device_id, action):
 def seat_send_msg(device_id):
     text = request.form.get("msg", "")
     send_mqtt_cmd(device_id, "msg", text)
-    # 这里也可以改为 return "ok" 配合前端 AJAX 提交，但为了保持简单，先保留重定向
     return redirect(url_for("index"))
 
 @app.route("/broadcast", methods=["GET", "POST"])
@@ -212,6 +193,7 @@ def users_list():
         conn.close()
     return render_template("users_list.html", users=rows)
 
+# 辅助函数：身份证转生日
 def get_birth_from_id(id_card):
     if len(id_card) == 18:
         birth_str = id_card[6:14]

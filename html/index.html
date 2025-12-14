@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>网吧管理系统</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    </head>
+    <meta http-equiv="refresh" content="3">
+  </head>
   <body class="bg-light">
     
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
@@ -30,35 +31,35 @@
         <div class="col-md-4 col-lg-3">
           <div class="card h-100 shadow-sm">
             <div class="card-header d-flex justify-content-between align-items-center">
-              <h5 class="mb-0" id="name-{{ seat.device_id }}">{{ seat.seat_name_display }}</h5>
-              <span id="badge-{{ seat.device_id }}" class="{{ seat.status_class }}">{{ seat.status_text }}</span>
+              <h5 class="mb-0">{{ seat.seat_name_display }}</h5>
+              <span class="{{ seat.status_class }}">{{ seat.status_text }}</span>
             </div>
             <div class="card-body">
-              <p id="user-info-{{ seat.device_id }}" class="card-text text-primary small fw-bold mb-2 {% if seat.current_status != 1 %}d-none{% endif %}">
-                {{ seat.user_info_display }}
-              </p>
+              {% if seat.current_status == 1 %}
+              <p class="card-text text-primary small fw-bold mb-2">{{ seat.user_info_display }}</p>
+              {% endif %}
               
               <ul class="list-group list-group-flush mb-3">
                 <li class="list-group-item d-flex justify-content-between p-1">
-                  <span>电脑</span> <span id="pc-{{ seat.device_id }}" class="fw-bold">{{ seat.pc_text }}</span>
+                  <span>电脑</span> <span class="fw-bold">{{ seat.pc_text }}</span>
                 </li>
                 <li class="list-group-item d-flex justify-content-between p-1">
-                  <span>灯光</span> <span id="light-{{ seat.device_id }}" class="fw-bold">{{ seat.light_text }}</span>
+                  <span>灯光</span> <span class="fw-bold">{{ seat.light_text }}</span>
                 </li>
                 <li class="list-group-item d-flex justify-content-between p-1">
-                  <span>人体</span> <span id="human-{{ seat.device_id }}" class="fw-bold">{{ seat.human_text }}</span>
+                  <span>人体</span> <span class="fw-bold">{{ seat.human_text }}</span>
                 </li>
                 <li class="list-group-item d-flex justify-content-between p-1">
                   <span>烟雾</span> 
-                  <span id="smoke-{{ seat.device_id }}">
+                  <span class="{% if seat.smoke_percent >= 60 %}text-danger fw-bold{% endif %}">
                     {{ seat.smoke_percent }}% ({{ seat.smoke_level }})
                   </span>
                 </li>
                 <li class="list-group-item d-flex justify-content-between p-1">
-                  <span>时长</span> <span id="time-{{ seat.device_id }}">{{ seat.duration_min }} 分</span>
+                  <span>时长</span> <span>{{ seat.current_sec // 60 }} 分</span>
                 </li>
                 <li class="list-group-item d-flex justify-content-between p-1">
-                  <span>费用</span> <span id="fee-{{ seat.device_id }}" class="text-success fw-bold">¥ {{ seat.current_fee_fmt }}</span>
+                  <span>费用</span> <span class="text-success fw-bold">¥ {{ seat.current_fee_fmt }}</span>
                 </li>
               </ul>
 
@@ -72,11 +73,11 @@
                   <a href="/seat/{{ seat.device_id }}/light_off" class="btn btn-outline-secondary">关灯</a>
                 </div>
                 
-                <a id="btn-checkout-{{ seat.device_id }}" 
-                   href="{% if seat.current_status == 1 %}/seat/{{ seat.device_id }}/checkout{% else %}#{% endif %}" 
-                   class="btn btn-sm {% if seat.current_status == 1 %}btn-warning{% else %}btn-secondary disabled{% endif %}">
-                   强制下机
-                </a>
+                {% if seat.current_status == 1 %}
+                <a href="/seat/{{ seat.device_id }}/checkout" class="btn btn-sm btn-warning">强制下机</a>
+                {% else %}
+                <button class="btn btn-sm btn-secondary" disabled>强制下机</button>
+                {% endif %}
 
                 <form action="/msg/{{ seat.device_id }}" method="POST" class="input-group input-group-sm mt-2">
                   <input type="text" name="msg" class="form-control" placeholder="短消息...">
@@ -86,17 +87,17 @@
                 <a href="/seat/{{ seat.device_id }}/reset" class="btn btn-sm btn-outline-dark mt-2" onclick="return confirm('确定要远程复位 STM32 吗？');">远程复位</a>
 
                 <div class="mt-2 text-center">
-                  <a id="link-maint-{{ seat.device_id }}" 
-                     href="/seat/{{ seat.device_id }}/{% if seat.is_maintenance %}maint_off{% else %}maint_on{% endif %}" 
-                     class="text-decoration-none small {% if seat.is_maintenance %}text-success{% else %}text-secondary{% endif %}">
-                     {% if seat.is_maintenance %}结束维护{% else %}设为维护{% endif %}
-                  </a>
+                  {% if seat.is_maintenance %}
+                  <a href="/seat/{{ seat.device_id }}/maint_off" class="text-decoration-none small text-success">结束维护</a>
+                  {% else %}
+                  <a href="/seat/{{ seat.device_id }}/maint_on" class="text-decoration-none small text-secondary">设为维护</a>
+                  {% endif %}
                 </div>
 
               </div>
             </div>
             <div class="card-footer text-muted small">
-              更新: <span id="update-{{ seat.device_id }}">{{ seat.last_update }}</span>
+              更新: {{ seat.last_update }}
             </div>
           </div>
         </div>
@@ -105,96 +106,5 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    
-    <script>
-      function updateSeats() {
-        fetch('/api/seats')
-          .then(response => response.json())
-          .then(data => {
-            data.forEach(seat => {
-              const did = seat.device_id;
-              
-              // 1. 更新标题和状态徽章
-              const nameEl = document.getElementById(`name-${did}`);
-              if(nameEl) nameEl.innerText = seat.seat_name_display;
-              
-              const badgeEl = document.getElementById(`badge-${did}`);
-              if(badgeEl) {
-                badgeEl.className = seat.status_class;
-                badgeEl.innerText = seat.status_text;
-              }
-
-              // 2. 更新用户信息 (显示/隐藏)
-              const userEl = document.getElementById(`user-info-${did}`);
-              if(userEl) {
-                userEl.innerText = seat.user_info_display;
-                if(seat.current_status === 1) {
-                  userEl.classList.remove('d-none');
-                } else {
-                  userEl.classList.add('d-none');
-                }
-              }
-
-              // 3. 更新列表状态
-              const pcEl = document.getElementById(`pc-${did}`);
-              if(pcEl) pcEl.innerText = seat.pc_text;
-
-              const lightEl = document.getElementById(`light-${did}`);
-              if(lightEl) lightEl.innerText = seat.light_text;
-
-              const humanEl = document.getElementById(`human-${did}`);
-              if(humanEl) humanEl.innerText = seat.human_text;
-
-              const smokeEl = document.getElementById(`smoke-${did}`);
-              if(smokeEl) {
-                smokeEl.innerText = `${seat.smoke_percent}% (${seat.smoke_level})`;
-                if(seat.smoke_percent >= 60) smokeEl.classList.add('text-danger', 'fw-bold');
-                else smokeEl.classList.remove('text-danger', 'fw-bold');
-              }
-
-              const timeEl = document.getElementById(`time-${did}`);
-              if(timeEl) timeEl.innerText = `${seat.duration_min} 分`;
-
-              const feeEl = document.getElementById(`fee-${did}`);
-              if(feeEl) feeEl.innerText = `¥ ${seat.current_fee_fmt}`;
-
-              // 4. 更新“强制下机”按钮状态
-              const btnCheck = document.getElementById(`btn-checkout-${did}`);
-              if(btnCheck) {
-                if(seat.current_status === 1) {
-                  btnCheck.className = "btn btn-sm btn-warning";
-                  btnCheck.href = `/seat/${did}/checkout`;
-                  btnCheck.classList.remove('disabled');
-                } else {
-                  btnCheck.className = "btn btn-sm btn-secondary disabled";
-                  btnCheck.href = "#";
-                }
-              }
-
-              // 5. 更新“维护”链接文本
-              const linkMaint = document.getElementById(`link-maint-${did}`);
-              if(linkMaint) {
-                if(seat.is_maintenance) {
-                  linkMaint.innerText = "结束维护";
-                  linkMaint.href = `/seat/${did}/maint_off`;
-                  linkMaint.className = "text-decoration-none small text-success";
-                } else {
-                  linkMaint.innerText = "设为维护";
-                  linkMaint.href = `/seat/${did}/maint_on`;
-                  linkMaint.className = "text-decoration-none small text-secondary";
-                }
-              }
-
-              // 6. 更新最后时间
-              const updateEl = document.getElementById(`update-${did}`);
-              if(updateEl) updateEl.innerText = seat.last_update;
-            });
-          })
-          .catch(err => console.error('Fetch error:', err));
-      }
-
-      // 每 3 秒执行一次 updateSeats，不刷新页面
-      setInterval(updateSeats, 3000);
-    </script>
   </body>
 </html>
