@@ -45,15 +45,15 @@ typedef enum { SCREEN_WELCOME = 0, SCREEN_INUSE, SCREEN_CONFIRM } screen_t;
 typedef enum { CONFIRM_NONE = 0, CONFIRM_PC_OFF, CONFIRM_EXIT } confirm_type_t;
 
 typedef struct {
-    app_state_t   state;
-    u8            has_user;
-    u8            uid[4];
+    app_state_t   state;        
+    u8            has_user;     
+    u8            uid[4];       
     u8            user_name[16];
-    u32           balance;
-    u32           used_seconds;
-    u8            pc_on;
-    u8            light_on;
-    u8            maint_mode;
+    u32           balance;      
+    u32           used_seconds; 
+    u8            pc_on;        
+    u8            light_on;     
+    u8            maint_mode;   
 } app_ctx_t;
 
 static app_ctx_t      g_app;
@@ -118,7 +118,8 @@ int main(void)
     LCD_Clear(WHITE);
 
     font_res = font_init();  
-    if (font_res) {
+    if (font_res)
+    {
         POINT_COLOR = RED;
         LCD_ShowString(10, 10, 300, 16, 16, (u8 *)"Font init error!");
         while (1);
@@ -129,9 +130,11 @@ int main(void)
 
     ESP8266_Init();                         
     ESP8266_ConnectAP(WIFI_SSID, WIFI_PASS);
+
     delay_ms(1000);
     ESP8266_MQTT_Config();
     ESP8266_MQTT_Connect();
+
     Netbar_Publish_SeatState();
 
     g_screen  = SCREEN_WELCOME;
@@ -153,7 +156,7 @@ int main(void)
         App_HandleTouch();
 
         if ((g_screen == SCREEN_WELCOME) && (g_app.state == STATE_IDLE)) {
-            if (RFID_CheckCard(uid)) App_OnCard(uid);
+            if (RFID_CheckCard(uid)) App_OnCard(uid);    
         }
 
         if (now - g_last_1s >= 1000) {
@@ -173,15 +176,22 @@ int main(void)
 
 static void UI_ShowServerMsg(const char *msg)
 {
-    u16 x = 10, y = lcddev.height - 24, w = lcddev.width - 20, h = 20;
+    u16 x = 10;
+    u16 y = lcddev.height - 24;   
+    u16 w = lcddev.width - 20;
+    u16 h = 20;
     LCD_Fill(x, y, x + w, y + h, GRAY);
-    POINT_COLOR = BLACK; BACK_COLOR = GRAY;
+    POINT_COLOR = BLACK;
+    BACK_COLOR  = GRAY;
     Show_Str(x + 4, y + 2, w - 8, 16, (u8 *)msg, 16, 0);
 }
 
 static void UI_ClearServerMsg(void)
 {
-    u16 x = 10, y = lcddev.height - 24, w = lcddev.width - 20, h = 20;
+    u16 x = 10;
+    u16 y = lcddev.height - 24;
+    u16 w = lcddev.width - 20;
+    u16 h = 20;
     LCD_Fill(x, y, x + w, y + h, WHITE);
 }
 
@@ -233,27 +243,19 @@ static void App_Task_1s(void)
     }
     if (esp8266_remote_msg_flag) {
         esp8266_remote_msg_flag = 0;
-        g_server_msg_secs = 5;      
+        g_server_msg_secs       = 5;      
         UI_ShowServerMsg(esp8266_remote_msg);
     }
-    
-    // ★★★ 修复：开启维护模式时，立即清除报警状态 ★★★
     if (esp8266_remote_maint_on_flag) {
         esp8266_remote_maint_on_flag = 0;
-        g_app.maint_mode = 1;
-        
-        // 强制清空报警计数和状态
-        g_idle_human_seconds = 0;
-        g_idle_occupy_alarm = 0;
-        Seat_Buzzer_Set(0); 
-        
+        g_app.maint_mode             = 1;
         if (g_screen == SCREEN_WELCOME) UI_DrawWelcomeStatic();
         UI_ShowServerMsg("座位已设为维护中");
         g_server_msg_secs = 5;
     }
     if (esp8266_remote_maint_off_flag) {
         esp8266_remote_maint_off_flag = 0;
-        g_app.maint_mode = 0;
+        g_app.maint_mode              = 0;
         if (g_screen == SCREEN_WELCOME) UI_DrawWelcomeStatic();
         UI_ShowServerMsg("维护结束");
         g_server_msg_secs = 5;
@@ -261,23 +263,30 @@ static void App_Task_1s(void)
 
     if (esp8266_remote_card_ok_flag) {
         esp8266_remote_card_ok_flag = 0;
-        g_wait_card_auth = 0;
-        g_app.state = STATE_INUSE;
-        g_app.used_seconds = esp8266_remote_restore_sec;
-        esp8266_remote_restore_sec = 0;
-        
+        g_wait_card_auth            = 0;
+        g_app.state        = STATE_INUSE;
+        g_app.used_seconds = esp8266_remote_restore_sec; 
+        esp8266_remote_restore_sec = 0; 
+
         memset(g_app.user_name, 0, sizeof(g_app.user_name));
-        strcpy((char *)g_app.user_name, esp8266_remote_user_name);
+        strcpy((char*)g_app.user_name, esp8266_remote_user_name);
         sscanf(esp8266_remote_balance_str, "%f", &bal_f);
         g_app.balance = (u32)(bal_f * 100);
 
-        g_app.pc_on = 1; g_app.light_on = 1;
+        g_app.pc_on    = 1; g_app.light_on = 1;
         Seat_PC_Set(1); Seat_Light_Set(1);
 
-        g_screen = SCREEN_INUSE; g_confirm = CONFIRM_NONE;
-        UI_DrawInuseStatic(); UI_UpdateStateLine(); UI_UpdateUserLine();
-        UI_UpdateCardLine(); UI_UpdateBalanceLine(); UI_UpdateRuntimeAndFee();
-        UI_UpdatePCButton(); UI_UpdateLightButton();
+        g_screen  = SCREEN_INUSE;
+        g_confirm = CONFIRM_NONE;
+
+        UI_DrawInuseStatic();
+        UI_UpdateStateLine();
+        UI_UpdateUserLine();
+        UI_UpdateCardLine();
+        UI_UpdateBalanceLine();
+        UI_UpdateRuntimeAndFee();
+        UI_UpdatePCButton();
+        UI_UpdateLightButton();
 
         if (g_app.used_seconds > 0) UI_ShowServerMsg("已恢复上机状态");
         else UI_ShowServerMsg("刷卡成功，开始计费");
@@ -286,7 +295,7 @@ static void App_Task_1s(void)
 
     if (esp8266_remote_card_err_flag) {
         esp8266_remote_card_err_flag = 0;
-        g_wait_card_auth = 0;
+        g_wait_card_auth             = 0;
         if (esp8266_card_err_msg[0] != 0) UI_ShowServerMsg(esp8266_card_err_msg);
         else UI_ShowServerMsg("刷卡失败");
         g_server_msg_secs = 5;
@@ -311,18 +320,20 @@ static void App_Task_1s(void)
         UI_UpdateRuntimeAndFee();   
     }
 
-    human = Seat_Radar_Get();
-    smoke_adc = Seat_Smoke_GetRaw();
+    human         = Seat_Radar_Get();
+    smoke_adc     = Seat_Smoke_GetRaw();
     smoke_percent = Smoke_AdcToPercent(smoke_adc);
 
-    if ((g_screen == SCREEN_WELCOME) && (g_app.state == STATE_IDLE) && (g_app.maint_mode == 0)) {
+    // ★★★ 占座报警修改：增加维护模式判断 ★★★
+    if ((g_screen == SCREEN_WELCOME) && (g_app.state == STATE_IDLE) && (g_app.maint_mode == 0))
+    {
         if (human) {
             if (g_idle_human_seconds < 0xFFFFFFFF) g_idle_human_seconds++;
+					//测试先设置12秒占座
             if ((g_idle_human_seconds >= 12) && (g_idle_occupy_alarm == 0)) {
                 g_idle_occupy_alarm = 1;
-                if (ESP8266_GetState() == WIFI_STATE_CONNECTED) {
+                if (ESP8266_GetState() == WIFI_STATE_CONNECTED)
                     ESP8266_MQTT_Publish("netbar/seat001/alert", "occupy_over_120s", 0, 0);
-                }
             }
         } else {
             g_idle_human_seconds = 0;
@@ -338,9 +349,8 @@ static void App_Task_1s(void)
         else {
             if (g_inuse_nohuman_seconds < 0xFFFFFFFF) g_inuse_nohuman_seconds++;
             if (g_inuse_nohuman_seconds >= 15 * 60) {
-                if (ESP8266_GetState() == WIFI_STATE_CONNECTED) {
+                if (ESP8266_GetState() == WIFI_STATE_CONNECTED)
                     ESP8266_MQTT_Publish("netbar/seat001/alert", "auto_checkout_nohuman_15min", 0, 0);
-                }
                 App_EndSession();
                 Netbar_Publish_SeatState();
                 g_inuse_nohuman_seconds = 0;
@@ -359,32 +369,33 @@ static void App_Task_1s(void)
 
 static void App_InitContext(void)
 {
-    g_app.state = STATE_IDLE;
-    g_app.has_user = 0;
+    g_app.state        = STATE_IDLE;
+    g_app.has_user     = 0;
     memset(g_app.uid, 0, 4);
     strcpy((char *)g_app.user_name, "--");
-    g_app.balance = 0;        
+    g_app.balance      = 0;        
     g_app.used_seconds = 0;
-    g_app.pc_on = 0;
-    g_app.light_on = 0;
-    g_app.maint_mode = 0;        
+    g_app.pc_on        = 0;
+    g_app.light_on     = 0;
+    g_app.maint_mode   = 0;        
 
     Seat_PC_Set(0);
     Seat_Light_Set(0);
     Seat_Buzzer_Set(0);
 
-    g_idle_human_seconds = 0;
-    g_idle_occupy_alarm = 0;
+    g_idle_human_seconds    = 0;
+    g_idle_occupy_alarm     = 0;
     g_inuse_nohuman_seconds = 0;
-    g_wait_card_auth = 0;
-    g_server_msg_secs = 0;
+    g_wait_card_auth        = 0;
+    g_server_msg_secs       = 0;
 }
 
 static void App_SoftReset(void)
 {
+    printf("APP: soft reset start...\r\n");
     App_InitContext();
-    g_screen = SCREEN_WELCOME;
-    g_confirm = CONFIRM_NONE;
+    g_screen        = SCREEN_WELCOME;
+    g_confirm       = CONFIRM_NONE;
     LCD_Clear(WHITE);
     UI_DrawWelcomeStatic();
     ESP8266_Init();
@@ -392,17 +403,21 @@ static void App_SoftReset(void)
     delay_ms(1000);
     ESP8266_MQTT_Config();
     if (ESP8266_MQTT_Connect() == ESP8266_OK) printf("APP: MQTT reconnect ok\r\n");
+    else printf("APP: MQTT reconnect FAIL\r\n");
     Netbar_Publish_SeatState();
+    printf("APP: soft reset done.\r\n");
 }
 
 static void UI_DrawWelcomeStatic(void)
 {
     LCD_Clear(WHITE);
     LCD_Fill(0, 0, lcddev.width - 1, 30, BLUE);
-    POINT_COLOR = WHITE; BACK_COLOR  = BLUE;
+    POINT_COLOR = WHITE;
+    BACK_COLOR  = BLUE;
     Show_Str(10, 5, lcddev.width - 90, 24, (u8 *)"智能无人网吧系统", 24, 0); 
     UI_UpdateWifiIcon();   
-    POINT_COLOR = BLACK; BACK_COLOR  = WHITE;
+    POINT_COLOR = BLACK;
+    BACK_COLOR  = WHITE;
     Show_Str(10, 40, lcddev.width - 20, 16, (u8 *)"欢迎使用", 16, 0);
     Show_Str(10, 60, lcddev.width - 20, 16, (u8 *)"费率: 1元/分钟(测试)", 16, 0);
     Show_Str(10, 90,  80, 16, (u8 *)"座位:", 16, 0);
@@ -410,10 +425,12 @@ static void UI_DrawWelcomeStatic(void)
     LCD_Fill(70, 90,  lcddev.width - 10, 106, WHITE);
     LCD_Fill(70, 110, lcddev.width - 10, 126, WHITE);
     LCD_Fill(10, 150, lcddev.width - 10, 190, GRAY);
-    POINT_COLOR = BLUE; BACK_COLOR  = GRAY;
+    POINT_COLOR = BLUE;
+    BACK_COLOR  = GRAY;
     if (g_app.maint_mode) Show_Str(20, 160, lcddev.width - 40, 16, (u8 *)"维护中，请勿上机", 16, 0);
     else Show_Str(20, 160, lcddev.width - 40, 16, (u8 *)"请刷卡上机", 16, 0);
-    POINT_COLOR = BLACK; BACK_COLOR  = WHITE;
+    POINT_COLOR = BLACK;
+    BACK_COLOR  = WHITE;
     Show_Str(10, 210, lcddev.width - 20, 16, (u8 *)"费率:1元/分钟", 16, 0);
     LCD_Fill(10, 230, lcddev.width - 10, 250, WHITE);
 }
@@ -422,10 +439,12 @@ static void UI_DrawInuseStatic(void)
 {
     LCD_Clear(WHITE);
     LCD_Fill(0, 0, lcddev.width - 1, 30, BLUE);
-    POINT_COLOR = WHITE; BACK_COLOR  = BLUE;
+    POINT_COLOR = WHITE;
+    BACK_COLOR  = BLUE;
     Show_Str(10, 5, lcddev.width - 90, 24, (u8 *)"上机中", 24, 0); 
     UI_UpdateWifiIcon();
-    POINT_COLOR = BLACK; BACK_COLOR  = WHITE;
+    POINT_COLOR = BLACK;
+    BACK_COLOR  = WHITE;
     Show_Str(10, 32, lcddev.width - 20, 16, (u8 *)"费率: 1元/分钟(测试)", 16, 0);
     Show_Str(10, 50,  70, 16, (u8 *)"状态:", 16, 0);
     Show_Str(10, 70,  70, 16, (u8 *)"用户:", 16, 0);
@@ -480,10 +499,12 @@ static void UI_UpdateEnvInuse(u8 human, u8 smoke_percent)
 
 static void UI_UpdateStateLine(void)
 {
+    u8 *text;
     POINT_COLOR = BLACK; BACK_COLOR  = WHITE;
     LCD_Fill(80, 50, 310, 66, WHITE);
-    if (g_app.state == STATE_IDLE) Show_Str(80, 50, 230, 16, (u8 *)"待机", 16, 0);
-    else Show_Str(80, 50, 230, 16, (u8 *)"上机中", 16, 0);
+    if (g_app.state == STATE_IDLE) text = (u8 *)"待机";
+    else text = (u8 *)"上机中";
+    Show_Str(80, 50, 230, 16, text, 16, 0);
 }
 
 static void UI_UpdateUserLine(void)
@@ -508,19 +529,27 @@ static void UI_UpdateCardLine(void)
 static void UI_UpdateBalanceLine(void)
 {
     char buf[24];
+    u32 yuan;
+    u32 cent;
     POINT_COLOR = BLACK; BACK_COLOR  = WHITE;
     LCD_Fill(80, 110, 310, 126, WHITE);
-    sprintf(buf, "%lu.%02lu 元", g_app.balance / 100, g_app.balance % 100);
+    yuan = g_app.balance / 100;
+    cent = g_app.balance % 100;
+    sprintf(buf, "%lu.%02lu 元", (unsigned long)yuan, (unsigned long)cent);
     Show_Str(80, 110, 230, 16, (u8 *)buf, 16, 0);
 }
 
 static void UI_UpdateRuntimeAndFee(void)
 {
+    u32 min;
+    u32 sec;
     u32 fee;
     char buf[24];
+    min = g_app.used_seconds / 60;
+    sec = g_app.used_seconds % 60;
     POINT_COLOR = BLACK; BACK_COLOR  = WHITE;
     LCD_Fill(80, 130, 310, 146, WHITE);
-    sprintf(buf, "%02lu:%02lu", g_app.used_seconds / 60, g_app.used_seconds % 60);
+    sprintf(buf, "%02lu:%02lu", min, sec);
     Show_Str(80, 130, 230, 16, (u8 *)buf, 16, 0);
     fee = (g_app.used_seconds / 60) * PRICE_PER_MIN;
     LCD_Fill(80, 150, 310, 166, WHITE);
@@ -528,28 +557,28 @@ static void UI_UpdateRuntimeAndFee(void)
     Show_Str(80, 150, 230, 16, (u8 *)buf, 16, 0);
 }
 
+// ★★★ 核心修复：防止断线时强行发数据导致串口拥堵 ★★★
 static void Netbar_Publish_SeatState(void)
 {
     char payload[96];
-    u8 human, iu, smoke_percent;
+    u8  human;
     u16 smoke_adc;
-    u32 used_seconds, fee;
+    u8  smoke_percent;
+    u8  iu;
+    u32 used_seconds;
+    u32 fee;
 
-    if (ESP8266_GetState() != WIFI_STATE_CONNECTED) return;
+    if (ESP8266_GetState() != WIFI_STATE_CONNECTED || g_mqtt_state != MQTT_STATE_CONNECTED) return;
 
-    human = Seat_Radar_Get();
-    smoke_adc = Seat_Smoke_GetRaw();
-    smoke_percent = Smoke_AdcToPercent(smoke_adc);
-    iu = (g_app.state == STATE_INUSE) ? 1 : 0;
+    human        = Seat_Radar_Get();
+    smoke_adc    = Seat_Smoke_GetRaw();
+    smoke_percent= Smoke_AdcToPercent(smoke_adc);
+    iu           = (g_app.state == STATE_INUSE) ? 1 : 0;
     used_seconds = g_app.used_seconds;
-    fee = (used_seconds / 60) * PRICE_PER_MIN;
+    fee          = (used_seconds / 60) * PRICE_PER_MIN;   
 
-    // ★★★ 修复：增加 occ 参数，上报占座报警状态 ★★★
-    sprintf(payload, "s=1;iu=%d;pc=%d;lt=%d;hm=%d;sm=%d;sec=%lu;fee=%lu;occ=%d",
-            iu, g_app.pc_on, g_app.light_on, human, smoke_percent, used_seconds, fee, g_idle_occupy_alarm);
-
+    sprintf(payload, "s=1;iu=%d;pc=%d;lt=%d;hm=%d;sm=%d;sec=%lu;fee=%lu", iu, g_app.pc_on, g_app.light_on, human, smoke_percent, used_seconds, fee);
     publish_seq++;
-    printf("STATE #%lu, payload: %s\r\n", publish_seq, payload);
     ESP8266_MQTT_Publish("netbar/seat001/state", payload, 0, 0);
 }
 
@@ -586,34 +615,38 @@ static void UI_UpdateLightButton(void)
 
 static void UI_UpdateWifiIcon(void)
 {
-    WifiState cur = ESP8266_GetState();
-    u16 base_x = lcddev.width - 40, base_y = 6;
+    WifiState cur;
+    u16 base_x;
+    u16 base_y;
+    cur = ESP8266_GetState();
+    base_x = lcddev.width - 40; 
+    base_y = 6;                 
     POINT_COLOR = WHITE; BACK_COLOR  = BLUE;
     LCD_Fill(lcddev.width - 70, 0, lcddev.width - 1, 30, BLUE);
     if (cur == WIFI_STATE_CONNECTED) {
-        LCD_Fill(base_x, base_y + 8, base_x + 6, base_y + 14, WHITE);
-        LCD_Fill(base_x + 8, base_y + 4, base_x + 14, base_y + 14, WHITE);
-        LCD_Fill(base_x + 16, base_y, base_x + 22, base_y + 14, WHITE);
+        LCD_Fill(base_x,     base_y + 8,  base_x + 6, base_y + 14, WHITE); 
+        LCD_Fill(base_x + 8, base_y + 4,  base_x +14, base_y + 14, WHITE); 
+        LCD_Fill(base_x +16, base_y,      base_x +22, base_y + 14, WHITE); 
     } else if (cur == WIFI_STATE_CONNECTING) {
-        LCD_Fill(base_x, base_y + 8, base_x + 6, base_y + 14, WHITE);
-        LCD_Fill(base_x + 8, base_y + 4, base_x + 14, base_y + 14, WHITE);
-        LCD_DrawRectangle(base_x + 16, base_y, base_x + 22, base_y + 14);
+        LCD_Fill(base_x,     base_y + 8,  base_x + 6, base_y + 14, WHITE);
+        LCD_Fill(base_x + 8, base_y + 4,  base_x +14, base_y + 14, WHITE);
+        LCD_DrawRectangle(base_x +16, base_y, base_x +22, base_y + 14);
     } else if (cur == WIFI_STATE_DISCONNECTED) {
-        LCD_Fill(base_x, base_y + 8, base_x + 6, base_y + 14, WHITE);
-        LCD_DrawRectangle(base_x + 8, base_y + 4, base_x + 14, base_y + 14);
-        LCD_DrawRectangle(base_x + 16, base_y, base_x + 22, base_y + 14);
+        LCD_Fill(base_x,     base_y + 8,  base_x + 6, base_y + 14, WHITE);
+        LCD_DrawRectangle(base_x + 8, base_y + 4, base_x +14, base_y + 14);
+        LCD_DrawRectangle(base_x +16, base_y,      base_x +22, base_y + 14);
     } else {
         POINT_COLOR = WHITE;
-        LCD_DrawLine(base_x, base_y, base_x + 15, base_y + 15);
-        LCD_DrawLine(base_x, base_y + 15, base_x + 15, base_y);
+        LCD_DrawLine(base_x,     base_y,     base_x + 15, base_y + 15);
+        LCD_DrawLine(base_x,     base_y +15, base_x + 15, base_y);
     }
     POINT_COLOR = BLACK; BACK_COLOR  = WHITE;
 }
 
 static u8 Smoke_AdcToPercent(u16 adc)
 {
-    if (adc <= 500) return 0;
-    if (adc >= 3500) return 100;
+    if (adc <= 500)   return 0;
+    if (adc >= 3500)  return 100;
     return (u8)((adc - 500) * 100 / (3500 - 500));
 }
 
@@ -632,19 +665,28 @@ static void UID_ToHex(const u8 *uid, char *out)
 
 static void App_OnCard(u8 *uid)
 {
-    u8 i; char uid_hex[9], payload[32];
+    u8  i;
+    char uid_hex[9];
+    char payload[32];
+
     if (g_app.maint_mode) {
         UI_ShowServerMsg("座位维护中，暂不提供上机服务");
-        g_server_msg_secs = 5; return;
+        g_server_msg_secs = 5;
+        return;
     }
+
     if (g_app.state == STATE_INUSE) {
         UI_ShowServerMsg("已在上机中");
-        g_server_msg_secs = 3; return;
+        g_server_msg_secs = 3;
+        return;
     }
+
     for (i = 0; i < 4; i++) g_app.uid[i] = uid[i];
     g_app.has_user = 1;
+
     UID_ToHex(uid, uid_hex);
     sprintf(payload, "uid=%s", uid_hex);
+
     if (ESP8266_GetState() == WIFI_STATE_CONNECTED) {
         ESP8266_MQTT_Publish("netbar/seat001/card", payload, 0, 0);
         g_wait_card_auth = 1;
@@ -659,7 +701,7 @@ static void App_OnCard(u8 *uid)
 
 static void App_EndSession(void)
 {
-    App_InitContext();
+    App_InitContext();   
     g_screen  = SCREEN_WELCOME;
     g_confirm = CONFIRM_NONE;
     UI_DrawWelcomeStatic();
@@ -686,11 +728,16 @@ static void UI_ShowConfirmDialog(confirm_type_t type)
 
 static void App_HandleTouch(void)
 {
-    u8 is_down; u16 x, y;
+    u8  is_down;
+    u16 x, y;
+
     if (tp_dev.scan(0)) {
         is_down = (tp_dev.sta & TP_PRES_DOWN) ? 1 : 0;
-        x = tp_dev.x[0]; y = tp_dev.y[0];
-    } else { is_down = 0; x = 0; y = 0; }
+        x = tp_dev.x[0];
+        y = tp_dev.y[0];
+    } else {
+        is_down = 0; x = 0; y = 0;
+    }
 
     if (is_down) {
         if (!g_touch_down) {
@@ -700,7 +747,7 @@ static void App_HandleTouch(void)
                     if (!g_app.pc_on) { g_app.pc_on = 1; Seat_PC_Set(1); UI_UpdatePCButton(); }
                     else { g_confirm = CONFIRM_PC_OFF; g_screen = SCREEN_CONFIRM; UI_ShowConfirmDialog(g_confirm); }
                 } else if ((x > BTN_LIGHT_X1) && (x < BTN_LIGHT_X2) && (y > BTN_LIGHT_Y1) && (y < BTN_LIGHT_Y2)) {
-                    g_app.light_on = !g_app.light_on; Seat_Light_Set(g_app.light_on); UI_UpdateLightButton();
+                    g_app.light_on = g_app.light_on ? 0 : 1; Seat_Light_Set(g_app.light_on); UI_UpdateLightButton();
                 } else if ((x > BTN_EXIT_X1) && (x < BTN_EXIT_X2) && (y > BTN_EXIT_Y1) && (y < BTN_EXIT_Y2)) {
                     if (g_app.state == STATE_INUSE) { g_confirm = CONFIRM_EXIT; g_screen = SCREEN_CONFIRM; UI_ShowConfirmDialog(g_confirm); }
                 }

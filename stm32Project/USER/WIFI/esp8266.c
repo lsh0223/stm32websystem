@@ -127,11 +127,15 @@ ESP8266_Status ESP8266_ConnectAP(const char *ssid, const char *pwd) {
     return ESP8266_TIMEOUT;
 }
 
+// -----------------------------------------------------------
+
 ESP8266_Status ESP8266_MQTT_Config(void) {
     char cmd[128];
+    ESP8266_Status st; // 变量声明提前
+
     sprintf(cmd, "AT+MQTTUSERCFG=0,1,\"%s\",\"\",\"\",0,0,\"\"\r\n", MQTT_CLIENT_ID);
     printf("ESP8266: MQTTUSERCFG cmd: %s", cmd);
-    ESP8266_Status st = ESP8266_SendCmdWait(cmd, "OK", 5000);
+    st = ESP8266_SendCmdWait(cmd, "OK", 5000);
     if (st == ESP8266_OK) {
         printf("ESP8266: MQTTUSERCFG ok\r\n");
         g_mqtt_state = MQTT_STATE_CONFIGURED;
@@ -146,26 +150,19 @@ ESP8266_Status ESP8266_MQTT_Config(void) {
 
 ESP8266_Status ESP8266_MQTT_Connect(void) {
     char cmd[128];
+    ESP8266_Status st; // 变量声明提前
+
     if (g_wifi_state != WIFI_STATE_CONNECTED) return ESP8266_ERROR;
     
-    // ★★★ 打印连接命令，确保IP正确 ★★★
     sprintf(cmd, "AT+MQTTCONN=%d,\"%s\",%d,%d\r\n", MQTT_LINK_ID, MQTT_BROKER_HOST, MQTT_BROKER_PORT, MQTT_RECONNECT);
-    printf("ESP8266: MQTTCONN cmd: %s", cmd); 
-    
-    ESP8266_Status st = ESP8266_SendCmdWait(cmd, "OK", 10000);
-    
-    // 兼容 +MQTTCONNECTED 响应
+    printf("ESP8266: MQTTCONN cmd: %s", cmd);
+    st = ESP8266_SendCmdWait(cmd, "OK", 10000);
     if ((st == ESP8266_OK) || (strstr((const char *)esp8266_rx_buf, "+MQTTCONNECTED") != NULL)) {
         printf("ESP8266: MQTT connected\r\n");
         g_mqtt_state = MQTT_STATE_CONNECTED;
-        
-        // ★★★ 核心修改：连接后延时 1秒，等待链路稳定 ★★★
-        delay_ms(1000);
-        
+        delay_ms(1000); // 等待连接稳定
         ESP8266_SendCmdWait("AT+MQTTSUB=0,\"netbar/seat001/cmd\",0\r\n", "OK", 5000);
-        
-        // 发送同步请求
-        ESP8266_MQTT_Publish("netbar/seat001/debug", "sync", 0, 0);
+        ESP8266_MQTT_Publish("netbar/seat001/debug", "sync", 0, 0); // 触发数据同步
         return ESP8266_OK;
     }
     printf("ESP8266: MQTT connect fail\r\n");
@@ -175,42 +172,57 @@ ESP8266_Status ESP8266_MQTT_Connect(void) {
 
 ESP8266_Status ESP8266_MQTT_Publish(const char *topic, const char *payload, u8 qos, u8 retain) {
     char cmd[256];
-    
-    // 如果还没连上，直接返回错误，不发命令，防止 ERROR 刷屏
+    ESP8266_Status st; // 变量声明提前
+
     if (g_mqtt_state != MQTT_STATE_CONNECTED) return ESP8266_ERROR;
     
     sprintf(cmd, "AT+MQTTPUB=%d,\"%s\",\"%s\",%d,%d\r\n", MQTT_LINK_ID, topic, payload, qos, retain);
-    
-    // 调试打印
-    // printf("ESP8266: MQTTPUB cmd: %s", cmd);
-
-    ESP8266_Status st = ESP8266_SendCmdWait(cmd, "OK", 8000);
+    st = ESP8266_SendCmdWait(cmd, "OK", 8000);
     if (st != ESP8266_OK) {
         printf("ESP8266: MQTTPUB fail -> Disconnecting\r\n");
-        // 发布失败说明连接断了，强制状态复位，触发重连
         g_wifi_state = WIFI_STATE_DISCONNECTED;
-        g_mqtt_state = MQTT_STATE_ERROR; 
+        g_mqtt_state = MQTT_STATE_ERROR;
     }
     return st;
 }
 
+// 自动重连与自愈任务
 void ESP8266_MQTT_Task_1s(void) {
     static u8 retry_cnt = 0;
+    static u8 fail_cnt = 0;
+
     if (g_wifi_state != WIFI_STATE_CONNECTED) {
         g_mqtt_state = MQTT_STATE_IDLE;
         s_mqtt_user_ok = 0;
         return;
     }
+
     if (!s_mqtt_user_ok) {
-        ESP8266_MQTT_Config();
-        return;
-    }
-    if (g_mqtt_state != MQTT_STATE_CONNECTED) {
-        retry_cnt++;
-        if (retry_cnt >= 5) { // 每5秒重试
-            retry_cnt = 0;
-            ESP8266_MQTT_Connect();
+        if (ESP8266_MQTT_Config() != ESP8266_OK) {
+            fail_cnt++;
+        } else {
+            fail_cnt = 0;
         }
+    } else if (g_mqtt_state != MQTT_STATE_CONNECTED) {
+        retry_cnt++;
+        if (retry_cnt >= 5) {
+            retry_cnt = 0;
+            if (ESP8266_MQTT_Connect() != ESP8266_OK) {
+                fail_cnt++;
+            } else {
+                fail_cnt = 0;
+            }
+        }
+    }
+
+    // 连续失败超过5次，硬重启模块
+    if (fail_cnt > 5) {
+        printf("ESP8266: Too many fails, HARD RESET...\r\n");
+        ESP8266_Init(); 
+        ESP8266_ConnectAP(WIFI_SSID, WIFI_PASS);
+        fail_cnt = 0;
+        retry_cnt = 0;
+        s_mqtt_user_ok = 0;
     }
 }
 
@@ -223,7 +235,7 @@ void ESP8266_Task_1s(void) {
     }
     if (g_wifi_state == WIFI_STATE_CONNECTING) {
         wifi_retry_cnt++;
-        if (wifi_retry_cnt > 20) { // 超时重置
+        if (wifi_retry_cnt > 20) {
             g_wifi_state = WIFI_STATE_DISCONNECTED;
             wifi_retry_cnt = 0;
         }
@@ -236,8 +248,7 @@ void ESP8266_Task_1s(void) {
     }
 }
 
-static void extract_value(const char *src, const char *key, char *out, int max_len)
-{
+static void extract_value(const char *src, const char *key, char *out, int max_len) {
     char *pos = strstr(src, key);
     int i = 0;
     if (pos) {
@@ -249,8 +260,7 @@ static void extract_value(const char *src, const char *key, char *out, int max_l
     }
 }
 
-void ESP8266_CheckRemoteCmd(void)
-{
+void ESP8266_CheckRemoteCmd(void) {
     char *buf = (char *)esp8266_rx_buf;
     char *topic_pos;
     char temp_sec[16];
@@ -268,8 +278,7 @@ void ESP8266_CheckRemoteCmd(void)
     if (strstr(topic_pos, "maint_on") != NULL) esp8266_remote_maint_on_flag = 1;
     if (strstr(topic_pos, "maint_off") != NULL) esp8266_remote_maint_off_flag = 1;
 
-    if (strstr(topic_pos, "card_ok") != NULL || strstr(topic_pos, "restore_session") != NULL)
-    {
+    if (strstr(topic_pos, "card_ok") != NULL || strstr(topic_pos, "restore_session") != NULL) {
         esp8266_remote_card_ok_flag = 1;
         extract_value(topic_pos, "name=", esp8266_remote_user_name, 32);
         extract_value(topic_pos, "balance=", esp8266_remote_balance_str, 16);
@@ -279,14 +288,12 @@ void ESP8266_CheckRemoteCmd(void)
         else esp8266_remote_restore_sec = 0;
     }
     
-    if (strstr(topic_pos, "card_err") != NULL)
-    {
+    if (strstr(topic_pos, "card_err") != NULL) {
         esp8266_remote_card_err_flag = 1;
         extract_value(topic_pos, "msg=", esp8266_card_err_msg, 32);
     }
 
-    if (strstr(topic_pos, "msg:") != NULL)
-    {
+    if (strstr(topic_pos, "msg:") != NULL) {
         char *msg_pos = strstr(topic_pos, "msg:");
         int i = 0;
         msg_pos += 4;
@@ -297,7 +304,6 @@ void ESP8266_CheckRemoteCmd(void)
         esp8266_remote_msg[i] = 0;
         esp8266_remote_msg_flag = 1;
     }
-
     esp8266_rx_len = 0;
     esp8266_rx_buf[0] = 0;
 }
