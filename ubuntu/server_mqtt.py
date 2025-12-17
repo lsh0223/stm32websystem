@@ -19,6 +19,7 @@ TOPIC_STATE = "netbar/+/state"
 TOPIC_DEBUG = "netbar/+/debug"
 TOPIC_CARD  = "netbar/+/card"
 TOPIC_ALERT = "netbar/+/alert"
+TOPIC_CMD   = "netbar/+/cmd" 
 
 DB_HOST = "127.0.0.1"
 DB_PORT = 3306
@@ -32,7 +33,6 @@ SMOKE_ALARM_TH = 60
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# 全局客户端，确保 send_mqtt 可用
 mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, clean_session=True)
 
 # ========= DB 工具 =========
@@ -93,9 +93,13 @@ def close_session_if_exists(device_id: str, reason: str = "normal", duration_sec
     session = get_active_session(device_id)
     if not session: return
     now = datetime.datetime.now()
-    duration_sec = int(duration_sec_hint) if (duration_sec_hint is not None and duration_sec_hint > 0) else int((now - session["start_time"]).total_seconds())
+    
+    delta = now - session["start_time"]
+    duration_sec = int(delta.total_seconds())
     if duration_sec < 0: duration_sec = 0
+    
     fee = round(duration_sec / 60.0 * PRICE_PER_MIN, 2)
+    logging.info(f"SETTLE: Device={device_id}, RealSec={duration_sec}, Fee={fee}, Reason={reason}")
 
     conn = get_db_connection()
     try:
@@ -112,20 +116,54 @@ def close_session_if_exists(device_id: str, reason: str = "normal", duration_sec
     finally: conn.close()
 
 def save_state_to_db(device_id: str, fields: Dict[str, str], raw_payload: str):
-    s, iu, sm, sec = int(fields.get("s", "0") or 0), int(fields.get("iu", "0") or 0), int(fields.get("sm", "0") or 0), int(fields.get("sec", "0") or 0)
+    s = int(fields.get("s", "0") or 0)
+    iu = int(fields.get("iu", "0") or 0)
+    sm = int(fields.get("sm", "0") or 0)
+    sec = int(fields.get("sec", "0") or 0)
+    al = int(fields.get("al", "0") or 0)  # 获取 STM32 发来的报警标志
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT current_sec FROM devices WHERE device_id=%s", (device_id,))
+            cur.execute("SELECT current_sec, current_status FROM devices WHERE device_id=%s", (device_id,))
             row = cur.fetchone()
             prev_sec = int(row["current_sec"]) if row else 0
-            status = 2 if sm >= SMOKE_ALARM_TH else (1 if iu == 1 else 0)
+            prev_status = int(row["current_status"]) if row else 0
+            
+            # ★★★ 状态判断逻辑修复 ★★★
+            status = 0
+            if iu == 1: status = 1      # 上机中
+            if sm >= SMOKE_ALARM_TH: status = 2  # 烟雾报警
+            if al == 1: status = 2      # 占座报警 (STM32 发来的)
+
             cur.execute("""INSERT INTO devices (device_id, seat_name, current_status, pc_status, light_status, human_status, smoke_percent, current_sec, current_fee, last_update) 
                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()) 
                            ON DUPLICATE KEY UPDATE current_status=VALUES(current_status), pc_status=VALUES(pc_status), light_status=VALUES(light_status), human_status=VALUES(human_status), smoke_percent=VALUES(smoke_percent), current_sec=VALUES(current_sec), current_fee=VALUES(current_fee), last_update=NOW()""",
                         (device_id, device_id, status, int(fields.get("pc",0)), int(fields.get("lt",0)), int(fields.get("hm",0)), sm, sec, float(fields.get("fee",0))))
+            
+            # ★★★ 新增：记录烟雾报警日志 ★★★
+            # 为了防止日志刷屏，只在状态从 非2 变为 2 时记录
+            if status == 2 and sm >= SMOKE_ALARM_TH and prev_status != 2:
+                cur.execute("INSERT INTO alarm_log (device_id, alarm_type, message, created_at) VALUES (%s, %s, %s, NOW())", 
+                            (device_id, "SMOKE", f"烟雾浓度过高: {sm}%"))
+
     finally: conn.close()
-    if prev_sec > 0 and sec == 0: close_session_if_exists(device_id, reason="normal", duration_sec_hint=prev_sec)
+    
+    session = get_active_session(device_id)
+    if session:
+        now = datetime.datetime.now()
+        server_sec = int((now - session["start_time"]).total_seconds())
+        if abs(server_sec - sec) > 5 or sec == 0:
+            logging.warning(f"SYNC NEEDED: Dev={device_id}, Client={sec}, Server={server_sec}")
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT username, balance FROM users WHERE card_uid=%s", (session["card_uid"],))
+                    u = cur.fetchone()
+                    if u:
+                        cmd = f"restore_session;name={u['username']};balance={float(u['balance']):.2f};sec={server_sec}"
+                        send_mqtt(device_id, "cmd", cmd)
+            finally: conn.close()
 
 def handle_card_swipe(device_id: str, payload: str):
     kv = parse_kv_payload(payload)
@@ -141,20 +179,17 @@ def handle_card_swipe(device_id: str, payload: str):
             dev = cur.fetchone()
             curr_status = int(dev["current_status"]) if dev else 0
             
-            # ★★★ 维护模式拦截 ★★★
             if dev and dev.get("is_maintenance"):
                 send_mqtt(device_id, "cmd", "card_err;code=maint;msg=维护中禁止上机")
                 return
 
             if active:
-                if curr_status == 0:
-                    logging.info("Auto-closing zombie session for %s", device_id)
-                    cur.execute("UPDATE user_session_log SET end_time=NOW(), fee=0, end_reason='stale' WHERE id=%s", (active["id"],))
-                    active = None 
-                elif active.get("card_uid") == card_uid:
+                if active.get("card_uid") == card_uid:
+                    now = datetime.datetime.now()
+                    server_sec = int((now - active["start_time"]).total_seconds())
                     cur.execute("SELECT * FROM users WHERE card_uid=%s", (card_uid,))
                     u = cur.fetchone()
-                    if u: send_mqtt(device_id, "cmd", f"card_ok;uid={card_uid};name={u['username']};balance={float(u['balance']):.2f};age=0")
+                    if u: send_mqtt(device_id, "cmd", f"card_ok;uid={card_uid};name={u['username']};balance={float(u['balance']):.2f};sec={server_sec}")
                     return
                 else:
                     send_mqtt(device_id, "cmd", "card_err;code=busy;msg=设备繁忙")
@@ -171,35 +206,24 @@ def handle_card_swipe(device_id: str, payload: str):
                 else:
                     create_session(device_id, card_uid, user["username"])
                     cur.execute("UPDATE devices SET current_status=1, current_user_id=%s, last_update=NOW() WHERE device_id=%s", (user["id"], device_id))
-                    send_mqtt(device_id, "cmd", f"card_ok;uid={card_uid};name={user['username']};balance={float(user['balance']):.2f};age={age}")
+                    send_mqtt(device_id, "cmd", f"card_ok;uid={card_uid};name={user['username']};balance={float(user['balance']):.2f};sec=0")
     finally: conn.close()
 
 def handle_debug(device_id: str, payload: str):
-    if "sync" in payload or "boot" in payload:
-        logging.info("Device %s requesting SYNC...", device_id)
-        conn = get_db_connection()
-        try:
-            with conn.cursor() as cur:
-                # 1. 恢复维护状态
-                cur.execute("SELECT is_maintenance FROM devices WHERE device_id=%s", (device_id,))
-                dev = cur.fetchone()
-                if dev and dev['is_maintenance']:
-                    send_mqtt(device_id, "cmd", "maint_on")
-                    logging.info("Synced MAINT_ON for %s", device_id)
-
-                # 2. 恢复会话
-                cur.execute("SELECT * FROM user_session_log WHERE device_id=%s AND end_time IS NULL ORDER BY id DESC LIMIT 1", (device_id,))
-                session = cur.fetchone()
-                if session:
-                    now = datetime.datetime.now()
-                    duration_sec = int((now - session["start_time"]).total_seconds())
-                    cur.execute("SELECT balance, username FROM users WHERE card_uid=%s", (session["card_uid"],))
+    if "sync" in payload:
+        session = get_active_session(device_id)
+        if session:
+            now = datetime.datetime.now()
+            server_sec = int((now - session["start_time"]).total_seconds())
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT username, balance FROM users WHERE card_uid=%s", (session["card_uid"],))
                     u = cur.fetchone()
                     if u:
-                        cmd = f"restore_session;name={u['username']};balance={float(u['balance']):.2f};sec={duration_sec}"
+                        cmd = f"restore_session;name={u['username']};balance={float(u['balance']):.2f};sec={server_sec}"
                         send_mqtt(device_id, "cmd", cmd)
-                        logging.info("Restored session for %s: %s", device_id, cmd)
-        finally: conn.close()
+            finally: conn.close()
     
     save_debug_to_db(device_id, payload)
 
@@ -209,6 +233,10 @@ def save_debug_to_db(device_id: str, payload: str):
         with conn.cursor() as cur:
             cur.execute("INSERT INTO device_state_log (device_id, state_text, created_at) VALUES (%s, %s, NOW())", (device_id, payload))
     finally: conn.close()
+
+def handle_cmd_from_device(device_id: str, payload: str):
+    if "checkout" in payload:
+        close_session_if_exists(device_id, reason="user_checkout")
 
 def handle_alert(device_id: str, payload: str):
     log_alarm(device_id, "ALERT", payload)
@@ -221,13 +249,12 @@ def handle_alert(device_id: str, payload: str):
 
 def on_connect(client, userdata, flags, rc):
     logging.info("MQTT connected rc=%s", rc)
-    if rc == 0: client.subscribe([(TOPIC_STATE, 0), (TOPIC_DEBUG, 0), (TOPIC_CARD, 0), (TOPIC_ALERT, 0)])
+    if rc == 0: client.subscribe([(TOPIC_STATE, 0), (TOPIC_DEBUG, 0), (TOPIC_CARD, 0), (TOPIC_ALERT, 0), (TOPIC_CMD, 0)])
 
 def on_message(client, userdata, msg):
     try:
         topic = msg.topic
         payload = msg.payload.decode("utf-8", errors="ignore")
-        logging.info("MSG: %s %s", topic, payload)
         parts = topic.split("/")
         if len(parts) == 3 and parts[0] == "netbar":
             did, kind = parts[1], parts[2]
@@ -235,6 +262,7 @@ def on_message(client, userdata, msg):
             elif kind == "debug": handle_debug(did, payload)
             elif kind == "card": handle_card_swipe(did, payload)
             elif kind == "alert": handle_alert(did, payload)
+            elif kind == "cmd": handle_cmd_from_device(did, payload)
     except Exception as e: logging.exception("Handle error: %s", e)
 
 def main():

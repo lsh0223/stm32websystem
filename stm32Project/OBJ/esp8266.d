@@ -38,6 +38,6 @@
 ..\obj\esp8266.o: ..\FWLIB\inc\stm32f4xx_fsmc.h
 ..\obj\esp8266.o: ..\SYSTEM\usart\usart.h
 ..\obj\esp8266.o: D:\Keil5\Core\ARM\ARMCC\Bin\..\include\stdio.h
-..\obj\esp8266.o: ..\SYSTEM\delay\delay.h
-..\obj\esp8266.o: D:\Keil5\Core\ARM\ARMCC\Bin\..\include\stdarg.h
 ..\obj\esp8266.o: D:\Keil5\Core\ARM\ARMCC\Bin\..\include\string.h
+..\obj\esp8266.o: D:\Keil5\Core\ARM\ARMCC\Bin\..\include\stdarg.h
+..\obj\esp8266.o: ..\SYSTEM\delay\delay.h

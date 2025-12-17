@@ -50,5 +50,5 @@
 ..\obj\main.o: .\seat_bsp\seat_bsp.h
 ..\obj\main.o: .\RFID\rfid_app.h
 ..\obj\main.o: .\WIFI\esp8266.h
-..\obj\main.o: D:\Keil5\Core\ARM\ARMCC\Bin\..\include\stdarg.h
 ..\obj\main.o: D:\Keil5\Core\ARM\ARMCC\Bin\..\include\string.h
+..\obj\main.o: D:\Keil5\Core\ARM\ARMCC\Bin\..\include\stdarg.h
