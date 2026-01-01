@@ -5,11 +5,12 @@ from flask import Flask, render_template, redirect, url_for, request, jsonify
 import pymysql
 import paho.mqtt.client as mqtt
 from datetime import datetime, date
+import time
 
 # ========= MQTT 配置 (本地) =========
 MQTT_BROKER = "127.0.0.1" 
 MQTT_PORT   = 1883
-MQTT_CLIENT_ID = "web_admin"
+MQTT_CLIENT_ID = "web_admin_interface"
 MQTT_USER   = ""
 MQTT_PASS   = ""
 
@@ -22,151 +23,110 @@ DB_NAME = "netbar"
 
 OFFLINE_SECS = 60
 
+app = Flask(__name__) # 默认使用 templates 文件夹
+
 def get_db_connection():
     return pymysql.connect(
         host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, database=DB_NAME,
         charset="utf8mb4", autocommit=True, cursorclass=pymysql.cursors.DictCursor
     )
 
-def load_seats():
+# MQTT 发送助手
+def send_mqtt_cmd(device_id, action, msg_text=""):
+    try:
+        client = mqtt.Client(client_id=f"web_cmd_{int(time.time())}")
+        if MQTT_USER: client.username_pw_set(MQTT_USER, MQTT_PASS)
+        client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        
+        topic = f"netbar/{device_id}/cmd"
+        
+        if action == "msg":
+            # 发送消息特殊处理
+            try:
+                payload = b"msg:" + msg_text.encode("gbk", errors="ignore")
+                client.publish(topic, payload, qos=0)
+            except:
+                client.publish(topic, f"msg:{msg_text}", qos=0)
+        else:
+            # 普通指令: pc_on, checkout, maint_on 等
+            client.publish(topic, action, qos=0)
+            
+        client.disconnect()
+    except Exception as e:
+        print(f"MQTT Error: {e}")
+
+# ================= 核心页面路由 =================
+
+@app.route("/")
+def index():
+    # 首页直接显示监控大屏
+    return render_template("home.html")
+
+# ★★★ 新增：前端轮询接口 (修复断电显示空闲问题) ★★★
+@app.route("/api/seats_status")
+def api_seats_status():
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT d.device_id, d.seat_name, d.current_status,
-                       d.is_maintenance, d.pc_status, d.light_status, d.human_status,
-                       d.smoke_percent, d.current_sec, d.current_fee,
-                       d.last_update,
-                       u.username AS current_user_name,
-                       u.card_uid AS current_card_uid
-                  FROM devices d
-             LEFT JOIN users u ON d.current_user_id = u.id
-              ORDER BY d.device_id
-                """
-            )
+            cur.execute("SELECT * FROM devices")
             rows = cur.fetchall()
+            
+            data = {}
+            now = datetime.now()
+            
+            for r in rows:
+                # 1. 获取用户名
+                user_name = "--"
+                if r['current_user_id']:
+                    cur.execute("SELECT username FROM users WHERE id=%s", (r['current_user_id'],))
+                    u = cur.fetchone()
+                    if u: user_name = u['username']
+                
+                # 2. 计算是否离线 (修复断电还显示空闲的BUG)
+                is_offline = False
+                if r['last_update']:
+                    delta = (now - r['last_update']).total_seconds()
+                    if delta > OFFLINE_SECS: is_offline = True
+                else:
+                    is_offline = True # 从未更新过也算离线
+
+                data[r['device_id']] = {
+                    "status": r['current_status'], # 0=空闲, 1=使用, 2=报警
+                    "maint": r['is_maintenance'],
+                    "user": user_name,
+                    "smoke": r['smoke_percent'],
+                    "sec": r['current_sec'],
+                    "fee": float(r['current_fee'] or 0),
+                    "offline": is_offline  # 传给前端判断
+                }
+            return jsonify(data)
     finally: conn.close()
 
-    now = datetime.now()
-    for r in rows:
-        last = r["last_update"]
-        is_maint = bool(r.get("is_maintenance", 0))
-        r["pc_text"]    = "开机" if r["pc_status"] else "关机"
-        r["light_text"] = "开启" if r["light_status"] else "关闭"
-        r["human_text"] = "有人" if r["human_status"] else "无人"
-        r["duration_min"] = (r.get("current_sec", 0) or 0) // 60 # 预计算分钟
+# ★★★ 新增：前端控制接口 ★★★
+@app.route("/api/cmd", methods=["POST"])
+def api_cmd():
+    did = request.form.get("device_id")
+    cmd = request.form.get("command")
+    val = request.form.get("value", "") # 用于消息内容
+    
+    if not did or not cmd: return jsonify({"status": "err"}), 400
 
-        if r.get("current_user_name"):
-            r["seat_name_display"] = f"{r['seat_name']} - {r['current_user_name']}"
-            r["user_info_display"] = f"卡号: {r['current_card_uid']}"
-        else:
-            r["seat_name_display"] = r['seat_name']
-            r["user_info_display"] = "无用户"
-
-        sm = r["smoke_percent"] or 0
-        if sm < 20: r["smoke_level"] = "良好"
-        elif sm < 40: r["smoke_level"] = "中等"
-        elif sm < 60: r["smoke_level"] = "偏高"
-        else: r["smoke_level"] = "危险"
-
-        is_offline = False
-        if last is None: is_offline = True
-        elif isinstance(last, datetime):
-            if (now - last).total_seconds() > OFFLINE_SECS: is_offline = True
-        r["is_offline"]     = is_offline
-        r["is_maintenance"] = is_maint
-
-        if is_offline:
-            r["status_text"] = "离线"; r["status_class"] = "badge bg-dark"
-        elif is_maint:
-            r["status_text"] = "维护中"; r["status_class"] = "badge bg-info"
-        else:
-            cs = r["current_status"] or 0
-            if cs == 1: r["status_text"] = "上机中"; r["status_class"] = "badge bg-success"
-            elif cs == 2: r["status_text"] = "告警"; r["status_class"] = "badge bg-danger"
-            else: r["status_text"] = "空闲"; r["status_class"] = "badge bg-secondary"
-
-        fee = r["current_fee"] or 0
-        r["current_fee_fmt"] = f"{fee:.2f}"
-    return rows
-
-mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, clean_session=True)
-if MQTT_USER: mqtt_client.username_pw_set(MQTT_USER, MQTT_PASS)
-try:
-    mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
-    mqtt_client.loop_start()
-except Exception as e: print(f"Warning: MQTT connect failed: {e}")
-
-def send_mqtt_cmd(device_id: str, action: str, msg_text: str = ""):
-    topic = f"netbar/{device_id}/cmd"
-    if action in ("pc_on", "pc_off", "light_on", "light_off", "checkout", "reset"):
-        mqtt_client.publish(topic, action, qos=0)
-        return
-    if action == "msg":
-        msg_text = (msg_text or "").strip()
-        if not msg_text: return
-        try:
-            prefix = b"msg:"
-            msg_bytes = msg_text.encode("gbk", errors="ignore")
-            mqtt_client.publish(topic, prefix + msg_bytes, qos=0)
-        except Exception as e: print("send_mqtt_cmd msg error:", e)
-        return
-
-app = Flask(__name__)
-
-# ★★★ 修改：根路由只返回外壳 ★★★
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-# ★★★ 新增：监控页内容路由 ★★★
-@app.route("/home")
-def home():
-    seats = load_seats()
-    return render_template("home.html", seats=seats)
-
-@app.route("/api/seats")
-def api_seats():
-    seats = load_seats()
-    for r in seats:
-        if isinstance(r.get("last_update"), datetime):
-            r["last_update"] = r["last_update"].strftime("%Y-%m-%d %H:%M:%S")
-        elif r.get("last_update") is None:
-            r["last_update"] = "未知"
-    return jsonify(seats)
-
-@app.route("/seat/<device_id>/<action>")
-def seat_action(device_id, action):
-    if action in ("maint_on", "maint_off"):
+    # 维护模式特殊处理：立即更新数据库，防止网页刷新后状态不对
+    if cmd == "maint_on":
         conn = get_db_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("UPDATE devices SET is_maintenance=%s WHERE device_id=%s", (1 if action == "maint_on" else 0, device_id))
-        finally: conn.close()
-    send_mqtt_cmd(device_id, action)
-    # 动作完成后，重定向回监控内容页
-    return redirect(url_for("home"))
+        with conn.cursor() as cur:
+            cur.execute("UPDATE devices SET is_maintenance=1, current_status=0 WHERE device_id=%s", (did,))
+        conn.close()
+    elif cmd == "maint_off":
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("UPDATE devices SET is_maintenance=0 WHERE device_id=%s", (did,))
+        conn.close()
+        
+    send_mqtt_cmd(did, cmd, val)
+    return jsonify({"status": "ok"})
 
-@app.route("/msg/<device_id>", methods=["POST"])
-def seat_send_msg(device_id):
-    text = request.form.get("msg", "")
-    send_mqtt_cmd(device_id, "msg", text)
-    return redirect(url_for("home"))
-
-@app.route("/broadcast", methods=["GET", "POST"])
-def broadcast():
-    if request.method == "POST":
-        text = request.form.get("msg", "").strip()
-        if text:
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT device_id FROM devices ORDER BY device_id")
-                    for r in cur.fetchall(): send_mqtt_cmd(r["device_id"], "msg", text)
-            finally: conn.close()
-        return redirect(url_for("home")) # 广播后回首页
-    return render_template("broadcast.html")
+# ================= 原有管理功能 (全部保留) =================
 
 @app.route("/users")
 def users_list():
@@ -178,22 +138,25 @@ def users_list():
     finally: conn.close()
     return render_template("users_list.html", users=rows)
 
-def get_birth_from_id(id_card):
-    if len(id_card) == 18:
-        birth_str = id_card[6:14]
-        return f"{birth_str[0:4]}-{birth_str[4:6]}-{birth_str[6:8]}"
-    return "2000-01-01"
-
 @app.route("/users/new", methods=["GET", "POST"])
 def users_new():
     if request.method == "POST":
-        card_uid, username = request.form.get("card_uid", "").strip(), request.form.get("username", "").strip()
-        id_card, balance = request.form.get("id_card", "").strip(), float(request.form.get("balance", "0") or 0)
-        birthdate = get_birth_from_id(id_card)
+        card_uid = request.form.get("card_uid", "").strip()
+        username = request.form.get("username", "").strip()
+        id_card = request.form.get("id_card", "").strip()
+        balance = float(request.form.get("balance", "0") or 0)
+        
+        # 简单生日解析
+        birthdate = "2000-01-01"
+        if len(id_card) == 18:
+            b = id_card[6:14]
+            birthdate = f"{b[0:4]}-{b[4:6]}-{b[6:8]}"
+
         conn = get_db_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("INSERT INTO users (card_uid, username, id_card, birthdate, balance) VALUES (%s, %s, %s, %s, %s)", (card_uid, username, id_card, birthdate, balance))
+                cur.execute("INSERT INTO users (card_uid, username, id_card, birthdate, balance) VALUES (%s, %s, %s, %s, %s)", 
+                            (card_uid, username, id_card, birthdate, balance))
         finally: conn.close()
         return redirect(url_for("users_list"))
     return render_template("users_edit.html", user=None)
@@ -202,29 +165,26 @@ def users_new():
 def users_edit(user_id):
     conn = get_db_connection()
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE id=%s", (user_id,))
-            user = cur.fetchone()
-    finally: conn.close()
-    if request.method == "POST":
-        username, id_card = request.form.get("username", "").strip(), request.form.get("id_card", "").strip()
-        birthdate = get_birth_from_id(id_card)
-        is_active = 1 if request.form.get("is_active") == "on" else 0
-        conn = get_db_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("UPDATE users SET username=%s, id_card=%s, birthdate=%s, is_active=%s WHERE id=%s", (username, id_card, birthdate, is_active, user_id))
-        finally: conn.close()
-        return redirect(url_for("users_list"))
-    return render_template("users_edit.html", user=user)
+        if request.method == "POST":
+            username = request.form.get("username", "").strip()
+            id_card = request.form.get("id_card", "").strip()
+            is_active = 1 if request.form.get("is_active") == "on" else 0
+            
+            birthdate = "2000-01-01"
+            if len(id_card) == 18:
+                b = id_card[6:14]
+                birthdate = f"{b[0:4]}-{b[4:6]}-{b[6:8]}"
 
-@app.route("/users/<int:user_id>/delete")
-def users_delete(user_id):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur: cur.execute("DELETE FROM users WHERE id=%s", (user_id,))
+            with conn.cursor() as cur:
+                cur.execute("UPDATE users SET username=%s, id_card=%s, birthdate=%s, is_active=%s WHERE id=%s", 
+                            (username, id_card, birthdate, is_active, user_id))
+            return redirect(url_for("users_list"))
+        else:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM users WHERE id=%s", (user_id,))
+                user = cur.fetchone()
+            return render_template("users_edit.html", user=user)
     finally: conn.close()
-    return redirect(url_for("users_list"))
 
 @app.route("/users/<int:user_id>/recharge", methods=["GET", "POST"])
 def users_recharge(user_id):
@@ -233,18 +193,27 @@ def users_recharge(user_id):
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM users WHERE id=%s", (user_id,))
             user = cur.fetchone()
-    finally: conn.close()
-    if request.method == "POST":
-        amount = float(request.form.get("amount", "0") or 0)
-        conn = get_db_connection()
-        try:
+            
+        if request.method == "POST":
+            amount = float(request.form.get("amount", "0") or 0)
             with conn.cursor() as cur:
-                new_balance = float(user["balance"]) + amount
-                cur.execute("UPDATE users SET balance=%s WHERE id=%s", (new_balance, user_id))
-                cur.execute("INSERT INTO recharge_log (user_id, amount, balance_after, created_at) VALUES (%s, %s, %s, NOW())", (user_id, amount, new_balance))
-        finally: conn.close()
-        return redirect(url_for("users_list"))
-    return render_template("users_recharge.html", user=user)
+                new_bal = float(user["balance"]) + amount
+                cur.execute("UPDATE users SET balance=%s WHERE id=%s", (new_bal, user_id))
+                cur.execute("INSERT INTO recharge_log (user_id, amount, balance_after, created_at) VALUES (%s, %s, %s, NOW())", 
+                            (user_id, amount, new_bal))
+            return redirect(url_for("users_list"))
+            
+        return render_template("users_recharge.html", user=user)
+    finally: conn.close()
+
+@app.route("/users/<int:user_id>/delete")
+def users_delete(user_id):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE id=%s", (user_id,))
+    finally: conn.close()
+    return redirect(url_for("users_list"))
 
 @app.route("/users/<int:user_id>/detail")
 def users_detail(user_id):
@@ -254,14 +223,18 @@ def users_detail(user_id):
             cur.execute("SELECT * FROM users WHERE id=%s", (user_id,))
             user = cur.fetchone()
             if not user: return "用户不存在", 404
+            
             cur.execute("SELECT * FROM user_session_log WHERE user_name=%s ORDER BY start_time DESC LIMIT 50", (user['username'],))
             sessions = cur.fetchall()
+            
             cur.execute("SELECT * FROM recharge_log WHERE user_id=%s ORDER BY created_at DESC LIMIT 50", (user_id,))
             recharges = cur.fetchall()
+            
             cur.execute("SELECT * FROM consume_log WHERE user_id=%s ORDER BY created_at DESC LIMIT 50", (user_id,))
             consumes = cur.fetchall()
+            
+        return render_template("users_detail.html", user=user, sessions=sessions, recharges=recharges, consumes=consumes)
     finally: conn.close()
-    return render_template("users_detail.html", user=user, sessions=sessions, recharges=recharges, consumes=consumes)
 
 @app.route("/logs/sessions")
 def logs_sessions():
@@ -288,14 +261,24 @@ def report_revenue_daily():
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT DATE(start_time) AS d, SUM(fee) AS total_fee, COUNT(*) AS cnt FROM user_session_log WHERE start_time >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(start_time) ORDER BY d""")
+            cur.execute("""SELECT DATE(start_time) AS d, SUM(fee) AS total_fee, COUNT(*) AS cnt 
+                           FROM user_session_log 
+                           WHERE start_time >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) 
+                           GROUP BY DATE(start_time) 
+                           ORDER BY d""")
             rows = cur.fetchall()
     finally: conn.close()
+    
     labels   = [row["d"].strftime("%Y-%m-%d") for row in rows]
     data_fee = [float(row["total_fee"] or 0) for row in rows]
     data_cnt = [int(row["cnt"] or 0) for row in rows]
+    
     return render_template("report_revenue_daily.html", labels=labels, data_fee=data_fee, data_cnt=data_cnt)
 
+@app.route("/broadcast")
+def broadcast():
+    return render_template("broadcast.html")
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=True)
     

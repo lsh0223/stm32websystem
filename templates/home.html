@@ -1,177 +1,240 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
-  <head>
+<head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>实时监控</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <title>智能无人网吧系统 - 监控大屏</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.bootcdn.net/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        /* 隐藏内部页面的导航栏，因为外层已经有了 */
-        .navbar { display: none !important; }
-        body { padding-top: 20px; }
+        .seat-card { margin-bottom: 20px; transition: all 0.3s; border-radius: 10px; }
+        .seat-card:hover { transform: translateY(-5px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
+        
+        /* 状态样式 */
+        .status-idle { border-top: 4px solid #28a745; } 
+        .status-inuse { border-top: 4px solid #007bff; background-color: #f8fbff; }
+        .status-alarm { border-top: 4px solid #dc3545; background-color: #fff5f5; animation: pulse 1s infinite; }
+        .status-maint { border-top: 4px solid #ffc107; background-color: #fffbf0; }
+        .status-offline { border-top: 4px solid #6c757d; background-color: #f8f9fa; opacity: 0.8; }
+
+        @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); } 100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); } }
+        
+        .card-header { background: transparent; border-bottom: 1px solid rgba(0,0,0,0.05); }
+        .btn-group-xs > .btn, .btn-xs { padding: .25rem .4rem; font-size: .875rem; line-height: 1.5; border-radius: .2rem; }
     </style>
-  </head>
-  <body class="bg-light">
-    
-    <div class="container">
-      <div class="row g-4">
-        {% for seat in seats %}
-        <div class="col-md-4 col-lg-3">
-          <div class="card h-100 shadow-sm">
-            <div class="card-header d-flex justify-content-between align-items-center">
-              <h5 class="mb-0" id="name-{{ seat.device_id }}">{{ seat.seat_name_display }}</h5>
-              <span id="badge-{{ seat.device_id }}" class="{{ seat.status_class }}">{{ seat.status_text }}</span>
-            </div>
-            <div class="card-body">
-              <p id="user-info-{{ seat.device_id }}" class="card-text text-primary small fw-bold mb-2 {% if seat.current_status != 1 %}d-none{% endif %}">
-                {{ seat.user_info_display }}
-              </p>
-              
-              <ul class="list-group list-group-flush mb-3">
-                <li class="list-group-item d-flex justify-content-between p-1">
-                  <span>电脑</span> <span id="pc-{{ seat.device_id }}" class="fw-bold">{{ seat.pc_text }}</span>
-                </li>
-                <li class="list-group-item d-flex justify-content-between p-1">
-                  <span>灯光</span> <span id="light-{{ seat.device_id }}" class="fw-bold">{{ seat.light_text }}</span>
-                </li>
-                <li class="list-group-item d-flex justify-content-between p-1">
-                  <span>人体</span> <span id="human-{{ seat.device_id }}" class="fw-bold">{{ seat.human_text }}</span>
-                </li>
-                <li class="list-group-item d-flex justify-content-between p-1">
-                  <span>烟雾</span> 
-                  <span id="smoke-{{ seat.device_id }}">
-                    {{ seat.smoke_percent }}% ({{ seat.smoke_level }})
-                  </span>
-                </li>
-                <li class="list-group-item d-flex justify-content-between p-1">
-                  <span>时长</span> <span id="time-{{ seat.device_id }}">{{ seat.duration_min }} 分</span>
-                </li>
-                <li class="list-group-item d-flex justify-content-between p-1">
-                  <span>费用</span> <span id="fee-{{ seat.device_id }}" class="text-success fw-bold">¥ {{ seat.current_fee_fmt }}</span>
-                </li>
-              </ul>
+</head>
+<body class="bg-light">
 
-              <div class="d-grid gap-2">
-                <div class="btn-group btn-group-sm">
-                  <a href="/seat/{{ seat.device_id }}/pc_on" class="btn btn-outline-success">开机</a>
-                  <a href="/seat/{{ seat.device_id }}/pc_off" class="btn btn-outline-danger">关机</a>
-                </div>
-                <div class="btn-group btn-group-sm">
-                  <a href="/seat/{{ seat.device_id }}/light_on" class="btn btn-outline-success">开灯</a>
-                  <a href="/seat/{{ seat.device_id }}/light_off" class="btn btn-outline-secondary">关灯</a>
-                </div>
-                
-                <a id="btn-checkout-{{ seat.device_id }}" 
-                   href="{% if seat.current_status == 1 %}/seat/{{ seat.device_id }}/checkout{% else %}#{% endif %}" 
-                   class="btn btn-sm {% if seat.current_status == 1 %}btn-warning{% else %}btn-secondary disabled{% endif %}">
-                   强制下机
-                </a>
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow mb-4">
+  <div class="container">
+    <a class="navbar-brand" href="/"><i class="fas fa-network-wired me-2"></i>智能无人网吧系统</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navbarNav">
+        <ul class="navbar-nav ms-auto">
+            <li class="nav-item"><a class="nav-link active" href="/"><i class="fas fa-desktop me-1"></i>实时监控</a></li>
+            <li class="nav-item"><a class="nav-link" href="/users"><i class="fas fa-users me-1"></i>用户管理</a></li>
+            <li class="nav-item"><a class="nav-link" href="/logs/sessions"><i class="fas fa-history me-1"></i>上机记录</a></li>
+            <li class="nav-item"><a class="nav-link" href="/logs/alarms"><i class="fas fa-exclamation-triangle me-1"></i>报警日志</a></li>
+            <li class="nav-item"><a class="nav-link" href="/report/revenue_daily"><i class="fas fa-chart-line me-1"></i>营收报表</a></li>
+        </ul>
+    </div>
+  </div>
+</nav>
 
-                <form action="/msg/{{ seat.device_id }}" method="POST" class="input-group input-group-sm mt-2">
-                  <input type="text" name="msg" class="form-control" placeholder="短消息...">
-                  <button class="btn btn-outline-primary" type="submit">发送</button>
-                </form>
-                
-                <a href="/seat/{{ seat.device_id }}/reset" class="btn btn-sm btn-outline-dark mt-2" onclick="return confirm('确定要远程复位 STM32 吗？');">远程复位</a>
-
-                <div class="mt-2 text-center">
-                  <a id="link-maint-{{ seat.device_id }}" 
-                     href="/seat/{{ seat.device_id }}/{% if seat.is_maintenance %}maint_off{% else %}maint_on{% endif %}" 
-                     class="text-decoration-none small {% if seat.is_maintenance %}text-success{% else %}text-secondary{% endif %}">
-                     {% if seat.is_maintenance %}结束维护{% else %}设为维护{% endif %}
-                  </a>
-                </div>
-
-              </div>
-            </div>
-            <div class="card-footer text-muted small">
-              更新: <span id="update-{{ seat.device_id }}">{{ seat.last_update }}</span>
-            </div>
+<div class="container">
+    <div class="modal fade" id="alarmModal" tabindex="-1" data-bs-backdrop="static">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-danger shadow-lg">
+          <div class="modal-header bg-danger text-white">
+            <h5 class="modal-title"><i class="fas fa-radiation-alt me-2"></i>紧急报警</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" onclick="stopAlarmSound()"></button>
+          </div>
+          <div class="modal-body text-center py-4">
+            <div class="display-1 text-danger mb-3"><i class="fas fa-bell fa-shake"></i></div>
+            <h3 id="alarmTitle" class="text-danger fw-bold">检测到异常！</h3>
+            <p class="fs-5 mt-3" id="alarmMsg"></p>
+            <p class="text-muted small border-top pt-2 mt-3" id="alarmTime"></p>
+          </div>
+          <div class="modal-footer justify-content-center">
+            <button type="button" class="btn btn-secondary px-4" data-bs-dismiss="modal" onclick="stopAlarmSound()">知晓并关闭</button>
           </div>
         </div>
-        {% endfor %}
       </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-      function updateSeats() {
-        fetch('/api/seats')
-          .then(response => response.json())
-          .then(data => {
-            data.forEach(seat => {
-              const did = seat.device_id;
-              
-              const nameEl = document.getElementById(`name-${did}`);
-              if(nameEl) nameEl.innerText = seat.seat_name_display;
-              
-              const badgeEl = document.getElementById(`badge-${did}`);
-              if(badgeEl) {
-                badgeEl.className = seat.status_class;
-                badgeEl.innerText = seat.status_text;
-              }
+    <div class="modal fade" id="msgModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">发送消息</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="msgDeviceId">
+            <div class="mb-3">
+              <label class="form-label">消息内容：</label>
+              <input type="text" class="form-control" id="msgContent" placeholder="请输入要发送到屏幕的文字">
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-primary" onclick="sendMsgSubmit()">发送</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
-              const userEl = document.getElementById(`user-info-${did}`);
-              if(userEl) {
-                userEl.innerText = seat.user_info_display;
-                if(seat.current_status === 1) userEl.classList.remove('d-none');
-                else userEl.classList.add('d-none');
-              }
+    <div class="row" id="deviceList">
+        <div class="col-12 text-center py-5" id="loading">
+            <div class="spinner-border text-primary" role="status"></div>
+            <p class="mt-2 text-muted">正在连接设备...</p>
+        </div>
+    </div>
+</div>
 
-              const pcEl = document.getElementById(`pc-${did}`);
-              if(pcEl) pcEl.innerText = seat.pc_text;
+<script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+<script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/js/bootstrap.bundle.min.js"></script>
 
-              const lightEl = document.getElementById(`light-${did}`);
-              if(lightEl) lightEl.innerText = seat.light_text;
+<script>
+    // 报警音效
+    var alarmAudio = new Audio('https://www.soundjay.com/buttons/beep-01a.mp3'); 
+    alarmAudio.loop = true;
+    
+    var alarmModal, msgModal;
+    var lastAlarmState = false;
 
-              const humanEl = document.getElementById(`human-${did}`);
-              if(humanEl) humanEl.innerText = seat.human_text;
+    $(document).ready(function(){
+        alarmModal = new bootstrap.Modal(document.getElementById('alarmModal'));
+        msgModal = new bootstrap.Modal(document.getElementById('msgModal'));
+        setInterval(refreshStatus, 1000); // 1秒轮询
+        refreshStatus();
+    });
 
-              const smokeEl = document.getElementById(`smoke-${did}`);
-              if(smokeEl) {
-                smokeEl.innerText = `${seat.smoke_percent}% (${seat.smoke_level})`;
-                if(seat.smoke_percent >= 60) smokeEl.classList.add('text-danger', 'fw-bold');
-                else smokeEl.classList.remove('text-danger', 'fw-bold');
-              }
+    function refreshStatus() {
+        $.getJSON('/api/seats_status', function(data) {
+            $('#loading').hide();
+            var container = $('#deviceList');
+            container.empty();
+            
+            var hasAlarm = false;
 
-              const timeEl = document.getElementById(`time-${did}`);
-              if(timeEl) timeEl.innerText = `${seat.duration_min} 分`;
+            $.each(data, function(did, dev) {
+                var statusClass = 'status-idle';
+                var statusText = '空闲';
+                var badgeClass = 'bg-success';
+                var icon = 'fa-check-circle';
 
-              const feeEl = document.getElementById(`fee-${did}`);
-              if(feeEl) feeEl.innerText = `¥ ${seat.current_fee_fmt}`;
-
-              const btnCheck = document.getElementById(`btn-checkout-${did}`);
-              if(btnCheck) {
-                if(seat.current_status === 1) {
-                  btnCheck.className = "btn btn-sm btn-warning";
-                  btnCheck.href = `/seat/${did}/checkout`;
-                  btnCheck.classList.remove('disabled');
-                } else {
-                  btnCheck.className = "btn btn-sm btn-secondary disabled";
-                  btnCheck.href = "#";
+                // 状态判断逻辑
+                if (dev.offline) {
+                    statusClass = 'status-offline'; statusText = '离线'; badgeClass = 'bg-secondary'; icon = 'fa-power-off';
+                } else if (dev.status == 2) { 
+                    statusClass = 'status-alarm'; statusText = '报警中'; badgeClass = 'bg-danger'; icon = 'fa-exclamation-triangle';
+                    hasAlarm = true;
+                    showAlarm(did, dev);
+                } else if (dev.maint) { 
+                    statusClass = 'status-maint'; statusText = '维护中'; badgeClass = 'bg-warning text-dark'; icon = 'fa-tools';
+                } else if (dev.status == 1) {
+                    statusClass = 'status-inuse'; statusText = '使用中'; badgeClass = 'bg-primary'; icon = 'fa-user';
                 }
-              }
 
-              const linkMaint = document.getElementById(`link-maint-${did}`);
-              if(linkMaint) {
-                if(seat.is_maintenance) {
-                  linkMaint.innerText = "结束维护";
-                  linkMaint.href = `/seat/${did}/maint_off`;
-                  linkMaint.className = "text-decoration-none small text-success";
-                } else {
-                  linkMaint.innerText = "设为维护";
-                  linkMaint.href = `/seat/${did}/maint_on`;
-                  linkMaint.className = "text-decoration-none small text-secondary";
-                }
-              }
+                // 动态生成卡片
+                var html = `
+                <div class="col-md-4 col-lg-3">
+                    <div class="card seat-card h-100 shadow-sm ${statusClass}">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0"><i class="fas fa-desktop me-2 text-muted"></i>${did}</h5>
+                            <span class="badge ${badgeClass}"><i class="fas ${icon} me-1"></i>${statusText}</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-3">
+                                <div class="col-6"><small class="text-muted">用户:</small><br><strong>${dev.user}</strong></div>
+                                <div class="col-6"><small class="text-muted">时长:</small><br>${Math.floor(dev.sec/60)} 分钟</div>
+                                <div class="col-6"><small class="text-muted">费用:</small><br>¥${dev.fee}</div>
+                                <div class="col-6"><small class="text-muted">烟雾:</small><br>
+                                    <span class="${dev.smoke > 60 ? 'text-danger fw-bold' : 'text-success'}">${dev.smoke}%</span>
+                                </div>
+                            </div>
+                            
+                            <div class="d-grid gap-2">
+                                <div class="btn-group btn-group-sm">
+                                    <button class="btn btn-outline-primary" onclick="cmd('${did}', 'pc_on')" title="开机"><i class="fas fa-power-off"></i></button>
+                                    <button class="btn btn-outline-secondary" onclick="cmd('${did}', 'pc_off')" title="关机"><i class="fas fa-stop"></i></button>
+                                    <button class="btn btn-outline-warning" onclick="cmd('${did}', 'light_on')" title="开灯"><i class="fas fa-lightbulb"></i></button>
+                                    <button class="btn btn-outline-dark" onclick="cmd('${did}', 'light_off')" title="关灯"><i class="far fa-lightbulb"></i></button>
+                                </div>
+                                
+                                ${dev.status == 1 ? 
+                                  `<button class="btn btn-sm btn-danger" onclick="cmd('${did}', 'checkout')"><i class="fas fa-sign-out-alt me-1"></i>强制下机结算</button>` : 
+                                  `<button class="btn btn-sm btn-secondary disabled">强制下机结算</button>`
+                                }
 
-              const updateEl = document.getElementById(`update-${did}`);
-              if(updateEl) updateEl.innerText = seat.last_update;
+                                <div class="btn-group btn-group-sm">
+                                    <button class="btn btn-info text-white" onclick="openMsgModal('${did}')"><i class="fas fa-comment-alt"></i> 消息</button>
+                                    <button class="btn btn-secondary" onclick="cmd('${did}', 'reset')"><i class="fas fa-sync"></i> 复位</button>
+                                </div>
+
+                                ${dev.maint ? 
+                                  `<button class="btn btn-sm btn-success" onclick="cmd('${did}', 'maint_off')"><i class="fas fa-check me-1"></i>结束维护</button>` :
+                                  `<button class="btn btn-sm btn-warning" onclick="cmd('${did}', 'maint_on')"><i class="fas fa-wrench me-1"></i>设为维护</button>`
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+                container.append(html);
             });
-          })
-          .catch(err => console.error('Fetch error:', err));
-      }
-      setInterval(updateSeats, 3000);
-    </script>
-  </body>
+
+            // 报警声音控制
+            if (!hasAlarm) stopAlarmSound();
+        });
+    }
+
+    // 显示红色报警弹窗
+    function showAlarm(did, dev) {
+        if (!lastAlarmState) { 
+            var type = dev.smoke > 60 ? "🔥 严重烟雾报警" : "⚠️ 非法占座报警";
+            var msg = `<strong>设备 ${did}</strong> 发生异常！<br>当前烟雾浓度: <span class="text-danger fw-bold">${dev.smoke}%</span>`;
+            
+            $('#alarmTitle').text(type);
+            $('#alarmMsg').html(msg);
+            $('#alarmTime').text("报警时间: " + new Date().toLocaleTimeString());
+            
+            alarmModal.show();
+            alarmAudio.play().catch(e=>{}); 
+            lastAlarmState = true;
+        }
+    }
+
+    function stopAlarmSound() {
+        alarmAudio.pause();
+        alarmAudio.currentTime = 0;
+        lastAlarmState = false;
+    }
+
+    function cmd(id, c, val) {
+        if(!confirm("确定执行此操作吗？")) return;
+        $.post('/api/cmd', { device_id: id, command: c, value: val }, function(res){
+            if(res.status === 'ok') {
+                // 可加个Toast提示
+            }
+        });
+    }
+
+    function openMsgModal(did) {
+        $('#msgDeviceId').val(did);
+        $('#msgContent').val('');
+        msgModal.show();
+    }
+
+    function sendMsgSubmit() {
+        var did = $('#msgDeviceId').val();
+        var txt = $('#msgContent').val();
+        if(txt) {
+            $.post('/api/cmd', { device_id: did, command: 'msg', value: txt });
+            msgModal.hide();
+        }
+    }
+</script>
+</body>
 </html>
