@@ -62,7 +62,7 @@ def index():
     # 首页直接显示监控大屏
     return render_template("home.html")
 
-# ★★★ 新增：前端轮询接口 (修复断电显示空闲问题) ★★★
+# ★★★ 新增：前端轮询接口 ) ★★★
 @app.route("/api/seats_status")
 def api_seats_status():
     conn = get_db_connection()
@@ -75,20 +75,18 @@ def api_seats_status():
             now = datetime.now()
             
             for r in rows:
-                # 1. 获取用户名
                 user_name = "--"
                 if r['current_user_id']:
                     cur.execute("SELECT username FROM users WHERE id=%s", (r['current_user_id'],))
                     u = cur.fetchone()
                     if u: user_name = u['username']
                 
-                # 2. 计算是否离线 (修复断电还显示空闲的BUG)
                 is_offline = False
                 if r['last_update']:
                     delta = (now - r['last_update']).total_seconds()
                     if delta > OFFLINE_SECS: is_offline = True
                 else:
-                    is_offline = True # 从未更新过也算离线
+                    is_offline = True
 
                 data[r['device_id']] = {
                     "status": r['current_status'], # 0=空闲, 1=使用, 2=报警
@@ -97,7 +95,10 @@ def api_seats_status():
                     "smoke": r['smoke_percent'],
                     "sec": r['current_sec'],
                     "fee": float(r['current_fee'] or 0),
-                    "offline": is_offline  # 传给前端判断
+                    "offline": is_offline,
+                    "pc": r['pc_status'],      # 电脑状态
+                    "light": r['light_status'],# 灯状态
+                    "human": r['human_status'] # ★★★ 新增：红外人体状态 (0=无人, 1=有人) ★★★
                 }
             return jsonify(data)
     finally: conn.close()
@@ -275,9 +276,50 @@ def report_revenue_daily():
     
     return render_template("report_revenue_daily.html", labels=labels, data_fee=data_fee, data_cnt=data_cnt)
 
-@app.route("/broadcast")
+@app.route("/broadcast", methods=["GET", "POST"])
 def broadcast():
-    return render_template("broadcast.html")
+    conn = get_db_connection()
+    try:
+        if request.method == "POST":
+            scope = request.form.get("scope", "all")
+            target_device = request.form.get("device_id", "").strip()
+            
+            # ★★★ 修复点：尝试获取 'text' (数据库字段名) 或 'content'，并去除空格
+            message = request.form.get("text", "") or request.form.get("content", "")
+            message = message.strip()
+            
+            if not message:
+                return "错误：广播消息内容不能为空！", 400
+
+            # 1. 写入数据库
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO broadcast_log (scope, device_id, text, created_at) VALUES (%s, %s, %s, NOW())", 
+                            (scope, target_device, message))
+                
+                # 2. 确定发送目标
+                target_list = []
+                if scope == "all":
+                    cur.execute("SELECT device_id FROM devices")
+                    rows = cur.fetchall()
+                    target_list = [r['device_id'] for r in rows]
+                elif target_device:
+                    target_list = [target_device]
+            
+            # 3. 发送 MQTT
+            for did in target_list:
+                send_mqtt_cmd(did, "msg", message)
+                
+            return redirect(url_for("broadcast"))
+
+        else:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM broadcast_log ORDER BY created_at DESC LIMIT 50")
+                logs = cur.fetchall()
+                cur.execute("SELECT device_id FROM devices ORDER BY device_id ASC")
+                devices = cur.fetchall()
+            return render_template("broadcast.html", logs=logs, devices=devices)
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

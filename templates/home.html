@@ -1,240 +1,305 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>智能无人网吧系统 - 监控大屏</title>
-    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.bootcdn.net/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .seat-card { margin-bottom: 20px; transition: all 0.3s; border-radius: 10px; }
-        .seat-card:hover { transform: translateY(-5px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
-        
-        /* 状态样式 */
-        .status-idle { border-top: 4px solid #28a745; } 
-        .status-inuse { border-top: 4px solid #007bff; background-color: #f8fbff; }
-        .status-alarm { border-top: 4px solid #dc3545; background-color: #fff5f5; animation: pulse 1s infinite; }
-        .status-maint { border-top: 4px solid #ffc107; background-color: #fffbf0; }
-        .status-offline { border-top: 4px solid #6c757d; background-color: #f8f9fa; opacity: 0.8; }
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>网吧智能管理系统 | NetBar OS</title>
+    
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
-        @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); } 100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); } }
+    <style>
+        :root {
+            --sidebar-width: 240px;
+            --primary-bg: #f4f6f9;
+            --dark-sidebar: #2c3e50;
+            --accent-color: #3498db;
+        }
+
+        body {
+            overflow: hidden;
+            background-color: var(--primary-bg);
+            font-family: 'Segoe UI', Roboto, sans-serif;
+        }
+
+        /* 侧边栏 */
+        .sidebar {
+            position: fixed; top: 0; left: 0;
+            width: var(--sidebar-width); height: 100vh;
+            background: var(--dark-sidebar); color: #ecf0f1;
+            padding-top: 20px; z-index: 1000;
+            box-shadow: 4px 0 10px rgba(0,0,0,0.1);
+        }
+        .brand { font-size: 24px; font-weight: bold; text-align: center; margin-bottom: 40px; letter-spacing: 2px; }
+        .nav-link { color: #bdc3c7; padding: 15px 30px; cursor: pointer; border-left: 4px solid transparent; transition: all 0.2s; }
+        .nav-link:hover, .nav-link.active { color: #fff; background: rgba(255,255,255,0.05); border-left-color: var(--accent-color); }
+        .nav-link i { margin-right: 12px; width: 20px; text-align: center; }
+
+        /* 内容区 */
+        .main-content { margin-left: var(--sidebar-width); height: 100vh; position: relative; }
+        .view-container { width: 100%; height: 100%; display: none; animation: fadeIn 0.4s ease-in-out; }
+        .view-container.active { display: block; }
+        .app-frame { width: 100%; height: 100%; border: none; }
+        #view-monitor { padding: 30px; overflow-y: auto; height: 100vh; padding-bottom: 100px; }
+
+        /* 设备卡片 */
+        .device-card {
+            background: #fff; border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+            transition: transform 0.2s; border: none; overflow: hidden; position: relative;
+        }
+        .device-card:hover { transform: translateY(-3px); box-shadow: 0 8px 25px rgba(0,0,0,0.1); }
         
-        .card-header { background: transparent; border-bottom: 1px solid rgba(0,0,0,0.05); }
-        .btn-group-xs > .btn, .btn-xs { padding: .25rem .4rem; font-size: .875rem; line-height: 1.5; border-radius: .2rem; }
+        .status-bar { height: 6px; width: 100%; }
+        .bg-gradient-success { background: linear-gradient(90deg, #2ecc71, #27ae60); }
+        .bg-gradient-secondary { background: linear-gradient(90deg, #95a5a6, #7f8c8d); }
+        .bg-gradient-danger { background: linear-gradient(90deg, #e74c3c, #c0392b); }
+
+        /* 电脑图标 */
+        .pc-icon-wrapper { font-size: 2.5rem; height: 50px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        .pc-on-glow { color: #2ecc71; filter: drop-shadow(0 0 8px rgba(46, 204, 113, 0.6)); animation: pulse-green 2s infinite; }
+        .pc-off { color: #dcdde1; }
+        @keyframes pulse-green { 0% { filter: drop-shadow(0 0 5px rgba(46, 204, 113, 0.4)); } 50% { filter: drop-shadow(0 0 12px rgba(46, 204, 113, 0.8)); } 100% { filter: drop-shadow(0 0 5px rgba(46, 204, 113, 0.4)); } }
+
+        /* 人体状态 (修改为行内标签样式，不再绝对定位覆盖) */
+        .human-badge { font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-left: 8px; vertical-align: middle; }
+        .human-active { color: #fff; background-color: #e67e22; animation: heartBeat 2s infinite; }
+        .human-inactive { color: #95a5a6; background-color: #ecf0f1; }
+
+        /* 灯光开关 */
+        .form-check-input { cursor: pointer; height: 1.2em; width: 2.4em; }
+        .form-switch .form-check-input:checked { background-color: #f1c40f; border-color: #f1c40f; filter: drop-shadow(0 0 5px rgba(241, 196, 15, 0.5)); }
+
+        /* 底部按钮组 */
+        .btn-toolbar-custom .btn { padding: 4px 8px; font-size: 12px; margin: 0 2px; }
+        .btn-checkout { color: #e74c3c; border-color: #e74c3c; }
+        .btn-checkout:hover { background: #e74c3c; color: #fff; }
+
+        /* 遮罩 */
+        .card-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.9); z-index: 10; display: flex; flex-direction: column; justify-content: center; align-items: center; backdrop-filter: blur(2px); }
+
     </style>
 </head>
-<body class="bg-light">
+<body>
 
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow mb-4">
-  <div class="container">
-    <a class="navbar-brand" href="/"><i class="fas fa-network-wired me-2"></i>智能无人网吧系统</a>
-    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div class="collapse navbar-collapse" id="navbarNav">
-        <ul class="navbar-nav ms-auto">
-            <li class="nav-item"><a class="nav-link active" href="/"><i class="fas fa-desktop me-1"></i>实时监控</a></li>
-            <li class="nav-item"><a class="nav-link" href="/users"><i class="fas fa-users me-1"></i>用户管理</a></li>
-            <li class="nav-item"><a class="nav-link" href="/logs/sessions"><i class="fas fa-history me-1"></i>上机记录</a></li>
-            <li class="nav-item"><a class="nav-link" href="/logs/alarms"><i class="fas fa-exclamation-triangle me-1"></i>报警日志</a></li>
-            <li class="nav-item"><a class="nav-link" href="/report/revenue_daily"><i class="fas fa-chart-line me-1"></i>营收报表</a></li>
-        </ul>
-    </div>
-  </div>
-</nav>
-
-<div class="container">
-    <div class="modal fade" id="alarmModal" tabindex="-1" data-bs-backdrop="static">
-      <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content border-danger shadow-lg">
-          <div class="modal-header bg-danger text-white">
-            <h5 class="modal-title"><i class="fas fa-radiation-alt me-2"></i>紧急报警</h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" onclick="stopAlarmSound()"></button>
-          </div>
-          <div class="modal-body text-center py-4">
-            <div class="display-1 text-danger mb-3"><i class="fas fa-bell fa-shake"></i></div>
-            <h3 id="alarmTitle" class="text-danger fw-bold">检测到异常！</h3>
-            <p class="fs-5 mt-3" id="alarmMsg"></p>
-            <p class="text-muted small border-top pt-2 mt-3" id="alarmTime"></p>
-          </div>
-          <div class="modal-footer justify-content-center">
-            <button type="button" class="btn btn-secondary px-4" data-bs-dismiss="modal" onclick="stopAlarmSound()">知晓并关闭</button>
-          </div>
+    <div class="sidebar">
+        <div class="brand"><i class="fas fa-network-wired"></i> NetBar OS</div>
+        <div class="nav flex-column">
+            <div class="nav-link active" onclick="switchView('monitor', this)"><i class="fas fa-desktop"></i> 设备监控</div>
+            <div class="nav-link" onclick="switchView('users', this, '/users')"><i class="fas fa-users"></i> 会员管理</div>
+            <div class="nav-link" onclick="switchView('logs', this, '/logs/sessions')"><i class="fas fa-history"></i> 上机记录</div>
+            <div class="nav-link" onclick="switchView('alarms', this, '/logs/alarms')"><i class="fas fa-bell"></i> 报警日志</div>
+            <div class="nav-link" onclick="switchView('report', this, '/report/revenue_daily')"><i class="fas fa-chart-line"></i> 营收报表</div>
+            <div class="nav-link" onclick="switchView('broadcast', this, '/broadcast')"><i class="fas fa-bullhorn"></i> 广播消息</div>
         </div>
-      </div>
+        <div class="mt-auto p-4 text-center text-secondary" style="font-size: 12px;">
+            <p>System Online<br><span id="clock">--:--:--</span></p>
+        </div>
     </div>
 
-    <div class="modal fade" id="msgModal" tabindex="-1">
-      <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">发送消息</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-          </div>
-          <div class="modal-body">
-            <input type="hidden" id="msgDeviceId">
-            <div class="mb-3">
-              <label class="form-label">消息内容：</label>
-              <input type="text" class="form-control" id="msgContent" placeholder="请输入要发送到屏幕的文字">
+    <div class="main-content">
+        <div id="view-monitor" class="view-container active">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h3><i class="fas fa-th-large text-primary"></i> 实时大屏监控</h3>
+                <div>
+                    <span class="badge bg-success me-2">在线: <span id="cnt-online">0</span></span>
+                    <span class="badge bg-secondary">空闲: <span id="cnt-free">0</span></span>
+                </div>
             </div>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-primary" onclick="sendMsgSubmit()">发送</button>
-          </div>
+            
+            <div class="row g-3" id="seats-container">
+                </div>
         </div>
-      </div>
-    </div>
 
-    <div class="row" id="deviceList">
-        <div class="col-12 text-center py-5" id="loading">
-            <div class="spinner-border text-primary" role="status"></div>
-            <p class="mt-2 text-muted">正在连接设备...</p>
+        <div id="view-frame-container" class="view-container" style="background: #fff;">
+            <iframe id="main-frame" class="app-frame" src=""></iframe>
         </div>
     </div>
-</div>
-
-<script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
-<script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/js/bootstrap.bundle.min.js"></script>
 
 <script>
-    // 报警音效
-    var alarmAudio = new Audio('https://www.soundjay.com/buttons/beep-01a.mp3'); 
-    alarmAudio.loop = true;
+    // 全局状态记录
+    let lastAlarmDevices = new Set(); 
     
-    var alarmModal, msgModal;
-    var lastAlarmState = false;
+    // ★★★ 核心修复：操作锁 (解决跳变问题) ★★★
+    // 结构: { "device_id": { expire: timestamp, val: 1/0 } }
+    const actionLocks = {}; 
 
-    $(document).ready(function(){
-        alarmModal = new bootstrap.Modal(document.getElementById('alarmModal'));
-        msgModal = new bootstrap.Modal(document.getElementById('msgModal'));
-        setInterval(refreshStatus, 1000); // 1秒轮询
-        refreshStatus();
-    });
+    function switchView(viewName, navEl, url=null) {
+        document.querySelectorAll('.nav-link').forEach(el => el.classList.remove('active'));
+        navEl.classList.add('active');
+        document.querySelectorAll('.view-container').forEach(el => el.classList.remove('active'));
+        
+        if (viewName === 'monitor') {
+            document.getElementById('view-monitor').classList.add('active');
+        } else {
+            const frameContainer = document.getElementById('view-frame-container');
+            const frame = document.getElementById('main-frame');
+            frameContainer.classList.add('active');
+            if (url && frame.getAttribute('src') !== url) frame.src = url;
+        }
+    }
 
-    function refreshStatus() {
-        $.getJSON('/api/seats_status', function(data) {
-            $('#loading').hide();
-            var container = $('#deviceList');
-            container.empty();
-            
-            var hasAlarm = false;
+    function renderCard(did, data) {
+        let statusClass = "bg-gradient-secondary"; 
+        if (data.status == 1) statusClass = "bg-gradient-success";
+        if (data.status == 2) statusClass = "bg-gradient-danger"; 
 
-            $.each(data, function(did, dev) {
-                var statusClass = 'status-idle';
-                var statusText = '空闲';
-                var badgeClass = 'bg-success';
-                var icon = 'fa-check-circle';
+        const pcClass = (data.pc == 1) ? "pc-on-glow" : "pc-off";
+        const pcTitle = (data.pc == 1) ? "运行中 (点击关机)" : "已关机 (点击唤醒)";
+        const lightChecked = (data.light == 1) ? "checked" : "";
 
-                // 状态判断逻辑
-                if (dev.offline) {
-                    statusClass = 'status-offline'; statusText = '离线'; badgeClass = 'bg-secondary'; icon = 'fa-power-off';
-                } else if (dev.status == 2) { 
-                    statusClass = 'status-alarm'; statusText = '报警中'; badgeClass = 'bg-danger'; icon = 'fa-exclamation-triangle';
-                    hasAlarm = true;
-                    showAlarm(did, dev);
-                } else if (dev.maint) { 
-                    statusClass = 'status-maint'; statusText = '维护中'; badgeClass = 'bg-warning text-dark'; icon = 'fa-tools';
-                } else if (dev.status == 1) {
-                    statusClass = 'status-inuse'; statusText = '使用中'; badgeClass = 'bg-primary'; icon = 'fa-user';
-                }
+        // ★★★ 修复1：人体检测显示位置优化 (不再遮挡烟雾) ★★★
+        let humanHtml = `<span class="human-badge human-inactive"><i class="fas fa-user-slash"></i> 无人</span>`;
+        if (data.human == 1) {
+            humanHtml = `<span class="human-badge human-active"><i class="fas fa-user"></i> 有人</span>`;
+        }
 
-                // 动态生成卡片
-                var html = `
-                <div class="col-md-4 col-lg-3">
-                    <div class="card seat-card h-100 shadow-sm ${statusClass}">
-                        <div class="card-header d-flex justify-content-between align-items-center">
-                            <h5 class="mb-0"><i class="fas fa-desktop me-2 text-muted"></i>${did}</h5>
-                            <span class="badge ${badgeClass}"><i class="fas ${icon} me-1"></i>${statusText}</span>
+        let overlayHtml = "";
+        if (data.offline) overlayHtml = `<div class="card-overlay"><i class="fas fa-wifi fa-2x text-secondary mb-2"></i><small class="text-secondary">离线</small></div>`;
+        else if (data.maint) overlayHtml = `<div class="card-overlay"><i class="fas fa-tools fa-2x text-warning mb-2"></i><small class="text-warning">维护中</small><button class="btn btn-sm btn-outline-warning mt-2" onclick="sendCmd('${did}', 'maint_off')">结束</button></div>`;
+
+        let userInfo = `<div class="text-muted small mt-2 py-1 text-center bg-light rounded">等待上机...</div>`;
+        if (data.status == 1) {
+            userInfo = `
+                <div class="mt-2 small border-top pt-2">
+                    <div class="d-flex justify-content-between mb-1"><span class="fw-bold text-dark">${data.user}</span> <span class="text-danger fw-bold">¥${data.fee.toFixed(1)}</span></div>
+                    <div class="progress" style="height: 4px;"><div class="progress-bar bg-success" style="width: 100%"></div></div>
+                    <div class="text-center text-muted mt-1" style="font-size:10px">${Math.floor(data.sec/60)}分${data.sec%60}秒</div>
+                </div>
+            `;
+        }
+
+        return `
+            <div class="col-6 col-md-4 col-lg-3 col-xl-2">
+                <div class="device-card h-100">
+                    <div class="status-bar ${statusClass}"></div>
+                    ${overlayHtml}
+                    
+                    <div class="p-3">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <div class="d-flex align-items-center">
+                                <h6 class="m-0 fw-bold text-dark">${did}</h6>
+                                ${humanHtml} </div>
+                            <small class="text-muted" style="font-size:11px;">${data.smoke}%烟</small>
                         </div>
-                        <div class="card-body">
-                            <div class="row g-2 mb-3">
-                                <div class="col-6"><small class="text-muted">用户:</small><br><strong>${dev.user}</strong></div>
-                                <div class="col-6"><small class="text-muted">时长:</small><br>${Math.floor(dev.sec/60)} 分钟</div>
-                                <div class="col-6"><small class="text-muted">费用:</small><br>¥${dev.fee}</div>
-                                <div class="col-6"><small class="text-muted">烟雾:</small><br>
-                                    <span class="${dev.smoke > 60 ? 'text-danger fw-bold' : 'text-success'}">${dev.smoke}%</span>
-                                </div>
-                            </div>
-                            
-                            <div class="d-grid gap-2">
-                                <div class="btn-group btn-group-sm">
-                                    <button class="btn btn-outline-primary" onclick="cmd('${did}', 'pc_on')" title="开机"><i class="fas fa-power-off"></i></button>
-                                    <button class="btn btn-outline-secondary" onclick="cmd('${did}', 'pc_off')" title="关机"><i class="fas fa-stop"></i></button>
-                                    <button class="btn btn-outline-warning" onclick="cmd('${did}', 'light_on')" title="开灯"><i class="fas fa-lightbulb"></i></button>
-                                    <button class="btn btn-outline-dark" onclick="cmd('${did}', 'light_off')" title="关灯"><i class="far fa-lightbulb"></i></button>
-                                </div>
-                                
-                                ${dev.status == 1 ? 
-                                  `<button class="btn btn-sm btn-danger" onclick="cmd('${did}', 'checkout')"><i class="fas fa-sign-out-alt me-1"></i>强制下机结算</button>` : 
-                                  `<button class="btn btn-sm btn-secondary disabled">强制下机结算</button>`
-                                }
+                        
+                        <div class="pc-icon-wrapper mb-2" onclick="handlePCClick('${did}', ${data.pc})" title="${pcTitle}">
+                            <i class="fas fa-desktop ${pcClass}"></i>
+                        </div>
 
-                                <div class="btn-group btn-group-sm">
-                                    <button class="btn btn-info text-white" onclick="openMsgModal('${did}')"><i class="fas fa-comment-alt"></i> 消息</button>
-                                    <button class="btn btn-secondary" onclick="cmd('${did}', 'reset')"><i class="fas fa-sync"></i> 复位</button>
-                                </div>
-
-                                ${dev.maint ? 
-                                  `<button class="btn btn-sm btn-success" onclick="cmd('${did}', 'maint_off')"><i class="fas fa-check me-1"></i>结束维护</button>` :
-                                  `<button class="btn btn-sm btn-warning" onclick="cmd('${did}', 'maint_on')"><i class="fas fa-wrench me-1"></i>设为维护</button>`
-                                }
+                        <div class="d-flex justify-content-center mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" ${lightChecked} onchange="handleLightToggle('${did}', this.checked)">
                             </div>
+                        </div>
+
+                        ${userInfo}
+
+                        <div class="d-flex justify-content-center mt-3 pt-2 border-top btn-toolbar-custom">
+                             <button class="btn btn-outline-secondary" onclick="sendCmd('${did}', 'reset')" title="复位"><i class="fas fa-sync-alt"></i></button>
+                             <button class="btn btn-outline-primary" onclick="sendCmd('${did}', 'msg', prompt('发送消息:'))" title="消息"><i class="fas fa-comment"></i></button>
+                             <button class="btn btn-outline-warning" onclick="sendCmd('${did}', 'maint_on')" title="维护"><i class="fas fa-tools"></i></button>
+                             <button class="btn btn-checkout" onclick="handleCheckout('${did}')" title="下机"><i class="fas fa-sign-out-alt"></i></button>
                         </div>
                     </div>
-                </div>`;
-                container.append(html);
+                </div>
+            </div>
+        `;
+    }
+
+    // ================== 交互逻辑 ==================
+
+    function handlePCClick(did, currentStatus) {
+        if (currentStatus == 1) {
+            Swal.fire({
+                title: '电脑关机?', text: "确认强制关闭电源？", icon: 'warning',
+                showCancelButton: true, confirmButtonColor: '#d33', confirmButtonText: '关机'
+            }).then((r) => { if(r.isConfirmed) sendCmd(did, 'pc_off'); });
+        } else {
+            sendCmd(did, 'pc_on');
+            const Toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
+            Toast.fire({icon:'success', title: '发送开机指令'});
+        }
+    }
+
+    function handleCheckout(did) {
+        Swal.fire({
+            title: '下机结算?', icon: 'question', showCancelButton: true, confirmButtonColor: '#e74c3c', confirmButtonText: '下机'
+        }).then((r) => { if(r.isConfirmed) sendCmd(did, 'checkout'); });
+    }
+
+    function handleLightToggle(did, checked) {
+        // ★★★ 修复2：设置操作锁，3秒内强制锁定UI显示状态 ★★★
+        // 这样可以避免轮询到的旧数据把按钮“弹”回去
+        actionLocks[did] = {
+            expire: Date.now() + 3000, // 锁定3秒
+            val: checked ? 1 : 0       // 期望的状态
+        };
+
+        sendCmd(did, checked ? 'light_on' : 'light_off');
+    }
+
+    function sendCmd(did, cmd, val="") {
+        if(cmd === 'msg' && !val) return;
+        const formData = new FormData();
+        formData.append("device_id", did);
+        formData.append("command", cmd);
+        formData.append("value", val);
+        fetch("/api/cmd", { method: "POST", body: formData });
+        // 发送后立即刷新一次，但这可能比MQTT慢，所以需要上面的 actionLocks 兜底
+        setTimeout(fetchStatus, 200); 
+    }
+
+    // ================== 轮询核心 ==================
+    function fetchStatus() {
+        if (!document.getElementById('view-monitor').classList.contains('active')) return;
+
+        fetch("/api/seats_status")
+        .then(res => res.json())
+        .then(data => {
+            const container = document.getElementById("seats-container");
+            let online = 0, free = 0;
+            let html = "";
+            let currentAlarmDevices = new Set();
+            const now = Date.now();
+
+            Object.keys(data).sort().forEach(did => {
+                const info = data[did];
+                if(info.status == 1) online++; else free++;
+                
+                // ★★★ 核心修复：检查是否有操作锁 ★★★
+                // 如果当前时间还在锁定有效期内，强制使用锁定的值，忽略后端返回的旧值
+                if (actionLocks[did] && now < actionLocks[did].expire) {
+                    info.light = actionLocks[did].val;
+                }
+
+                html += renderCard(did, info);
+
+                // 报警检测
+                if (info.status == 2 || info.smoke >= 60) {
+                    currentAlarmDevices.add(did);
+                    if (!lastAlarmDevices.has(did)) triggerAlarmPopup(did, info.smoke);
+                }
             });
 
-            // 报警声音控制
-            if (!hasAlarm) stopAlarmSound();
+            container.innerHTML = html;
+            document.getElementById("cnt-online").innerText = online;
+            document.getElementById("cnt-free").innerText = free;
+            lastAlarmDevices = currentAlarmDevices;
         });
     }
 
-    // 显示红色报警弹窗
-    function showAlarm(did, dev) {
-        if (!lastAlarmState) { 
-            var type = dev.smoke > 60 ? "🔥 严重烟雾报警" : "⚠️ 非法占座报警";
-            var msg = `<strong>设备 ${did}</strong> 发生异常！<br>当前烟雾浓度: <span class="text-danger fw-bold">${dev.smoke}%</span>`;
-            
-            $('#alarmTitle').text(type);
-            $('#alarmMsg').html(msg);
-            $('#alarmTime').text("报警时间: " + new Date().toLocaleTimeString());
-            
-            alarmModal.show();
-            alarmAudio.play().catch(e=>{}); 
-            lastAlarmState = true;
-        }
+    function triggerAlarmPopup(did, smokeVal) {
+        let msg = (smokeVal >= 60) ? `座位 ${did} 烟雾报警 (浓度:${smokeVal}%)` : `座位 ${did} 非法占座报警`;
+        Swal.fire({ title: '⚠️ 紧急报警', text: msg, icon: 'error', confirmButtonColor: '#d33', backdrop: `rgba(255,0,0,0.4)` });
     }
 
-    function stopAlarmSound() {
-        alarmAudio.pause();
-        alarmAudio.currentTime = 0;
-        lastAlarmState = false;
-    }
+    setInterval(() => { document.getElementById("clock").innerText = new Date().toLocaleTimeString(); }, 1000);
+    setInterval(fetchStatus, 2000);
+    fetchStatus();
 
-    function cmd(id, c, val) {
-        if(!confirm("确定执行此操作吗？")) return;
-        $.post('/api/cmd', { device_id: id, command: c, value: val }, function(res){
-            if(res.status === 'ok') {
-                // 可加个Toast提示
-            }
-        });
-    }
-
-    function openMsgModal(did) {
-        $('#msgDeviceId').val(did);
-        $('#msgContent').val('');
-        msgModal.show();
-    }
-
-    function sendMsgSubmit() {
-        var did = $('#msgDeviceId').val();
-        var txt = $('#msgContent').val();
-        if(txt) {
-            $.post('/api/cmd', { device_id: did, command: 'msg', value: txt });
-            msgModal.hide();
-        }
-    }
 </script>
 </body>
 </html>

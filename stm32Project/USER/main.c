@@ -40,6 +40,9 @@ void LCD_Display_Dir(u8 dir);
 #define CONF_BTN_CANCEL_X2  (CONF_X2  - 20)
 #define CONF_BTN_CANCEL_Y2  (CONF_Y2  - 20)
 
+// ★★★ 新增：声明外部变量 (需要在 esp8266.c 中定义此缓冲) ★★★
+extern char esp8266_remote_uid[32]; 
+
 // --- 类型定义 ---
 typedef enum { STATE_IDLE = 0, STATE_INUSE } app_state_t;
 typedef enum { SCREEN_WELCOME = 0, SCREEN_INUSE, SCREEN_CONFIRM, SCREEN_MAINTENANCE } screen_t;
@@ -103,6 +106,8 @@ static void App_HandleTouch(void);
 static void Netbar_Publish_SeatState(void);      
 static void App_Task_1s(void);                   
 static void UID_ToHex(const u8 *uid, char *out);
+// ★★★ 新增：Hex字符串转Byte数组辅助函数声明 ★★★
+static void UID_HexStr_To_Bytes(const char *str, u8 *out_uid);
 
 // --- 主函数 ---
 int main(void)
@@ -161,8 +166,7 @@ int main(void)
 
         now = GetSysMs();
 
-        // ★★★ 蜂鸣器逻辑改进：急促滴滴声 ★★★
-        // 只有在【有报警】且【不在维护模式】时才响
+        // 蜂鸣器逻辑：只有在【有报警】且【不在维护模式】时才响
         if ((g_idle_occupy_alarm || g_smoke_alarm) && (g_app.maint_mode == 0)) {
             // 200ms一个周期：100ms响，100ms停 (急促)
             if ((now % 200) < 100) Seat_Buzzer_Set(1);
@@ -217,7 +221,7 @@ static void App_Task_1s(void)
         return;                 
     }
 
-    // ★★★ 维护模式切换 ★★★
+    // 维护模式切换
     if (esp8266_remote_maint_on_flag) {
         esp8266_remote_maint_on_flag = 0;
         g_app.maint_mode = 1;
@@ -275,15 +279,25 @@ static void App_Task_1s(void)
         UI_ShowServerMsg(esp8266_remote_msg);
     }
 
-    // 刷卡反馈处理
+    // 刷卡/恢复会话 反馈处理
     if (esp8266_remote_card_ok_flag) {
         esp8266_remote_card_ok_flag = 0;
         g_wait_card_auth = 0;
+        
+        // ★★★ 修复2：断电重连恢复卡号信息 ★★★
+        // 如果当前g_app.has_user为0，说明不是刚才刷卡的，而是服务器发来的恢复指令
+        if (g_app.has_user == 0) {
+            // 解析服务器发来的UID (例如 "1A2B3C4D")
+            UID_HexStr_To_Bytes(esp8266_remote_uid, g_app.uid);
+            g_app.has_user = 1;
+        }
+
         g_app.used_seconds = esp8266_remote_restore_sec; 
         memset(g_app.user_name, 0, sizeof(g_app.user_name));
         strcpy((char*)g_app.user_name, esp8266_remote_user_name);
         sscanf(esp8266_remote_balance_str, "%f", &bal_f);
         g_app.balance = (u32)(bal_f * 100);
+        
         if (g_app.state != STATE_INUSE) {
             g_app.state = STATE_INUSE;
             g_app.pc_on = 1; g_app.light_on = 1;
@@ -291,9 +305,18 @@ static void App_Task_1s(void)
             g_screen = SCREEN_INUSE;
             g_confirm = CONFIRM_NONE;
             UI_DrawInuseStatic();
-            UI_ShowServerMsg("刷卡成功");
+            // 提示信息区分
+            if (g_app.used_seconds > 0) UI_ShowServerMsg("会话已恢复");
+            else UI_ShowServerMsg("刷卡成功");
         }
-        UI_UpdateStateLine(); UI_UpdateUserLine(); UI_UpdateCardLine(); UI_UpdateBalanceLine(); UI_UpdateRuntimeAndFee(); UI_UpdatePCButton(); UI_UpdateLightButton();
+        // 刷新所有数据，确保卡号、余额等显示出来
+        UI_UpdateStateLine(); 
+        UI_UpdateUserLine(); 
+        UI_UpdateCardLine(); 
+        UI_UpdateBalanceLine(); 
+        UI_UpdateRuntimeAndFee(); 
+        UI_UpdatePCButton(); 
+        UI_UpdateLightButton();
         g_server_msg_secs = 3;
     }
     if (esp8266_remote_card_err_flag) {
@@ -316,9 +339,13 @@ static void App_Task_1s(void)
         if (g_server_msg_secs == 0) UI_ClearServerMsg();
     }
 
+    // ★★★ 修复1：防止弹窗被覆盖 ★★★
     if ((g_app.state == STATE_INUSE) && (g_screen == SCREEN_INUSE)) {
         g_app.used_seconds++;
-        UI_UpdateRuntimeAndFee();   
+        // 只有当【没有】烟雾报警 且 【没有】占座报警时，才刷新费用区域
+        if (g_smoke_alarm == 0 && g_idle_occupy_alarm == 0) {
+            UI_UpdateRuntimeAndFee();   
+        }
     }
 
     // ★★★ 报警检测逻辑 ★★★
@@ -349,7 +376,7 @@ static void App_Task_1s(void)
                 if ((g_idle_human_seconds >= 12) && (g_idle_occupy_alarm == 0)) {
                     g_idle_occupy_alarm = 1;
                     ESP8266_MQTT_Pub_Async("netbar/seat001/alert", "occupy_over_120s");
-                    UI_DrawAlarmWindow("警告", "请勿占座!"); // 弹窗
+                    UI_DrawAlarmWindow("警告", "请勿占座!");// 弹窗
                 }
             } else {
                 if (g_idle_occupy_alarm == 1) {
@@ -453,10 +480,25 @@ static void UI_DrawAlarmWindow(const char* title, const char* msg) {
     Show_Str(x+20, y+70, 220, 16, (u8 *)msg, 16, 0);
 }
 
+// 清除报警弹窗时，强制恢复动态数据
 static void UI_ClearAlarmWindow(void) {
-    if (g_screen == SCREEN_WELCOME) UI_DrawWelcomeStatic();
-    else if (g_screen == SCREEN_INUSE) UI_DrawInuseStatic();
-    else if (g_screen == SCREEN_MAINTENANCE) UI_DrawMaintenanceStatic();
+    if (g_screen == SCREEN_WELCOME) {
+        UI_DrawWelcomeStatic();
+    }
+    else if (g_screen == SCREEN_INUSE) {
+        UI_DrawInuseStatic(); // 这只是画了背景框
+        // 必须补上以下数据，否则屏幕是空的
+        UI_UpdateStateLine();
+        UI_UpdateUserLine();
+        UI_UpdateCardLine();
+        UI_UpdateBalanceLine();
+        UI_UpdateRuntimeAndFee();
+        UI_UpdatePCButton();
+        UI_UpdateLightButton();
+    }
+    else if (g_screen == SCREEN_MAINTENANCE) {
+        UI_DrawMaintenanceStatic();
+    }
 }
 
 static void UI_DrawWelcomeStatic(void) {
@@ -542,4 +584,17 @@ static void UI_ShowConfirmDialog(confirm_type_t type) { LCD_Fill(CONF_X1, CONF_Y
 static void App_HandleTouch(void) { u8 is_down; u16 x, y; if (tp_dev.scan(0)) { is_down = (tp_dev.sta & TP_PRES_DOWN) ? 1 : 0; x = tp_dev.x[0]; y = tp_dev.y[0]; } else { is_down = 0; x = 0; y = 0; } if (is_down) { if (!g_touch_down) { g_touch_down = 1; if (g_screen == SCREEN_INUSE) { if ((x > BTN_PC_X1) && (x < BTN_PC_X2) && (y > BTN_PC_Y1) && (y < BTN_PC_Y2)) { if (!g_app.pc_on) { g_app.pc_on = 1; Seat_PC_Set(1); UI_UpdatePCButton(); } else { g_confirm = CONFIRM_PC_OFF; g_screen = SCREEN_CONFIRM; UI_ShowConfirmDialog(g_confirm); } } else if ((x > BTN_LIGHT_X1) && (x < BTN_LIGHT_X2) && (y > BTN_LIGHT_Y1) && (y < BTN_LIGHT_Y2)) { g_app.light_on = g_app.light_on ? 0 : 1; Seat_Light_Set(g_app.light_on); UI_UpdateLightButton(); } else if ((x > BTN_EXIT_X1) && (x < BTN_EXIT_X2) && (y > BTN_EXIT_Y1) && (y < BTN_EXIT_Y2)) { if (g_app.state == STATE_INUSE) { g_confirm = CONFIRM_EXIT; g_screen = SCREEN_CONFIRM; UI_ShowConfirmDialog(g_confirm); } } } else if (g_screen == SCREEN_CONFIRM) { if ((x > CONF_BTN_OK_X1) && (x < CONF_BTN_OK_X2) && (y > CONF_BTN_OK_Y1) && (y < CONF_BTN_OK_Y2)) { if (g_confirm == CONFIRM_PC_OFF) { g_app.pc_on = 0; Seat_PC_Set(0); g_screen = SCREEN_INUSE; g_confirm = CONFIRM_NONE; UI_DrawInuseStatic(); UI_UpdateStateLine(); UI_UpdateUserLine(); UI_UpdateCardLine(); UI_UpdateBalanceLine(); UI_UpdateRuntimeAndFee(); UI_UpdatePCButton(); UI_UpdateLightButton(); } else if (g_confirm == CONFIRM_EXIT) App_EndSession(); } else if ((x > CONF_BTN_CANCEL_X1) && (x < CONF_BTN_CANCEL_X2) && (y > CONF_BTN_CANCEL_Y1) && (y < CONF_BTN_CANCEL_Y2)) { g_screen = SCREEN_INUSE; g_confirm = CONFIRM_NONE; UI_DrawInuseStatic(); UI_UpdateStateLine(); UI_UpdateUserLine(); UI_UpdateCardLine(); UI_UpdateBalanceLine(); UI_UpdateRuntimeAndFee(); UI_UpdatePCButton(); UI_UpdateLightButton(); } } } } else g_touch_down = 0; }
 
 static void Netbar_Publish_SeatState(void) { char payload[96]; u8 human; u16 smoke_adc; u8 smoke_percent; u8 iu; u32 used_seconds; u32 fee; u8 alarm_active; if (ESP8266_GetState() != WIFI_STATE_RUNNING) return; human = Seat_Radar_Get(); smoke_adc = Seat_Smoke_GetRaw(); smoke_percent = Smoke_AdcToPercent(smoke_adc); iu = (g_app.state == STATE_INUSE) ? 1 : 0; used_seconds = g_app.used_seconds; fee = (used_seconds / 60) * PRICE_PER_MIN; alarm_active = g_idle_occupy_alarm || g_smoke_alarm; sprintf(payload, "s=1;iu=%d;pc=%d;lt=%d;hm=%d;sm=%d;sec=%lu;fee=%lu;al=%d", iu, g_app.pc_on, g_app.light_on, human, smoke_percent, used_seconds, fee, alarm_active); publish_seq++; ESP8266_MQTT_Pub_Async("netbar/seat001/state", payload); }
-	
+
+// ★★★ 新增：Hex字符串转Byte数组辅助函数 ★★★
+static void UID_HexStr_To_Bytes(const char *str, u8 *out_uid) {
+    int i;
+    unsigned int val;
+    for (i = 0; i < 4; i++) {
+        // 每次读2个字符，格式化为16进制
+        if (sscanf(str + i * 2, "%02x", &val) == 1) {
+            out_uid[i] = (u8)val;
+        } else {
+            out_uid[i] = 0;
+        }
+    }
+}

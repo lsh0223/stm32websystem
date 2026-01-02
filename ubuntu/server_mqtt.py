@@ -161,9 +161,45 @@ def save_state_to_db(device_id: str, fields: Dict[str, str], raw_payload: str):
                     cur.execute("SELECT username, balance FROM users WHERE card_uid=%s", (session["card_uid"],))
                     u = cur.fetchone()
                     if u:
-                        cmd = f"restore_session;name={u['username']};balance={float(u['balance']):.2f};sec={server_sec}"
+                        # ★★★ 修复：改用 card_ok 并带上 uid，确保设备端能完整恢复显示 ★★★
+                        cmd = f"card_ok;uid={session['card_uid']};name={u['username']};balance={float(u['balance']):.2f};sec={server_sec}"
                         send_mqtt(device_id, "cmd", cmd)
             finally: conn.close()
+            
+        # =========================================================================
+        # ★★★ 核心修复：实时余额监控与自动下机 ★★★
+        # =========================================================================
+        conn = get_db_connection()
+        force_checkout = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT balance FROM users WHERE card_uid=%s", (session["card_uid"],))
+                u = cur.fetchone()
+                if u:
+                    current_balance = float(u["balance"])
+                    # 计算当前已用费 (根据设备上报的 sec，按分钟计费)
+                    current_fee = (sec / 60.0) * PRICE_PER_MIN
+                    
+                    # 检查是否欠费 (当费用 >= 余额时停止)
+                    if current_fee >= current_balance and current_balance >= 0:
+                        logging.warning(f"BALANCE LIMIT: Dev={device_id}, Fee={current_fee}, Bal={current_balance}. Force Checkout.")
+                        force_checkout = True
+        finally: conn.close()
+        
+        if force_checkout:
+            # 1. 立即通知设备下机
+            send_mqtt(device_id, "cmd", "checkout;code=no_bal;msg=余额耗尽已下机")
+            # 2. 服务器端强制结算
+            close_session_if_exists(device_id, reason="balance_empty")
+            
+    else:
+        # =========================================================================
+        # ★★★ 核心修复：僵尸状态保护 ★★★
+        # 如果服务器认为没有订单，但设备仍上报"使用中(iu=1)"，则强制复位设备
+        # =========================================================================
+        if iu == 1:
+            logging.warning(f"ZOMBIE DETECTED: Device {device_id} reports usage but no session found. Sending reset.")
+            send_mqtt(device_id, "cmd", "checkout;code=sync;msg=状态同步复位")
 
 def handle_card_swipe(device_id: str, payload: str):
     kv = parse_kv_payload(payload)
@@ -221,7 +257,8 @@ def handle_debug(device_id: str, payload: str):
                     cur.execute("SELECT username, balance FROM users WHERE card_uid=%s", (session["card_uid"],))
                     u = cur.fetchone()
                     if u:
-                        cmd = f"restore_session;name={u['username']};balance={float(u['balance']):.2f};sec={server_sec}"
+                        # ★★★ 修复：同上，带上 uid ★★★
+                        cmd = f"card_ok;uid={session['card_uid']};name={u['username']};balance={float(u['balance']):.2f};sec={server_sec}"
                         send_mqtt(device_id, "cmd", cmd)
             finally: conn.close()
     
