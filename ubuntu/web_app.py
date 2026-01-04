@@ -21,7 +21,7 @@ DB_USER = "root"
 DB_PASS = "123456"
 DB_NAME = "netbar"
 
-OFFLINE_SECS = 60
+OFFLINE_SECS = 5
 
 app = Flask(__name__) # 默认使用 templates 文件夹
 
