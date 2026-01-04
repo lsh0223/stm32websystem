@@ -31,7 +31,7 @@ def get_db_connection():
         charset="utf8mb4", autocommit=True, cursorclass=pymysql.cursors.DictCursor
     )
 
-# MQTT 发送助手
+# MQTT 发送助手 (保持你原有的逻辑)
 def send_mqtt_cmd(device_id, action, msg_text=""):
     try:
         client = mqtt.Client(client_id=f"web_cmd_{int(time.time())}_{device_id}")
@@ -49,7 +49,6 @@ def send_mqtt_cmd(device_id, action, msg_text=""):
                 client.publish(topic, f"msg:{msg_text}", qos=0)
         else:
             # 普通指令: pc_on, checkout, maint_on, set_rate 等
-            # 如果有附加参数（如 set_rate;val=2.0），直接发送 action 字符串
             client.publish(topic, action, qos=0)
             
         client.disconnect()
@@ -63,44 +62,71 @@ def index():
     # 首页直接显示监控大屏
     return render_template("home.html")
 
-# ★★★ 新增：设置页面路由 ★★★
-@app.route("/settings", methods=["GET", "POST"])
+# ★★★ 修改：设置页面路由 (只负责显示页面) ★★★
+@app.route("/settings")
 def settings():
+    # 这里只渲染页面，数据通过下面的 API 获取
+    return render_template("settings.html")
+
+# ★★★ 新增：获取当前费率 API (配合 settings.html) ★★★
+@app.route('/get_rate', methods=['GET'])
+def get_rate():
     conn = get_db_connection()
     try:
-        if request.method == "POST":
-            # 1. 获取新费率
-            new_price = request.form.get("price", "1.0")
-            try:
-                float_price = float(new_price)
-            except:
-                return "费率格式错误", 400
-
-            # 2. 更新数据库
-            with conn.cursor() as cur:
-                cur.execute("INSERT INTO config (k, v) VALUES ('price_per_min', %s) ON DUPLICATE KEY UPDATE v=%s", (new_price, new_price))
-            
-            # 3. 广播给所有设备
-            with conn.cursor() as cur:
-                cur.execute("SELECT device_id FROM devices")
-                devices = cur.fetchall()
-                
-            cmd_str = f"set_rate;val={float_price:.2f}"
-            for dev in devices:
-                send_mqtt_cmd(dev['device_id'], cmd_str)
-                
-            return redirect(url_for("settings"))
-        else:
-            # 读取当前配置
-            with conn.cursor() as cur:
-                cur.execute("SELECT v FROM config WHERE k='price_per_min'")
-                row = cur.fetchone()
-                current_price = row['v'] if row else "1.0"
-            return render_template("settings.html", price=current_price)
+        with conn.cursor() as cur:
+            # 从数据库读取配置
+            cur.execute("SELECT v FROM config WHERE k='price_per_min'")
+            row = cur.fetchone()
+            current_price = row['v'] if row else "1.0"
+        return jsonify({"rate": current_price})
+    except Exception as e:
+        print(f"Error getting rate: {e}")
+        return jsonify({"rate": "1.0"})
     finally:
         conn.close()
 
-# ★★★ 新增：前端轮询接口 ★★★
+# ★★★ 新增：更新费率 API (配合 settings.html) ★★★
+@app.route('/update_rate', methods=['POST'])
+def update_rate():
+    # 1. 获取前端 JSON 数据
+    data = request.get_json()
+    new_price = data.get('rate')
+    
+    if not new_price:
+        return jsonify({"status": "error", "message": "费率不能为空"}), 400
+
+    conn = get_db_connection()
+    try:
+        # 2. 转换数据类型
+        float_price = float(new_price)
+        
+        # 3. 更新数据库 (config 表)
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO config (k, v) VALUES ('price_per_min', %s) ON DUPLICATE KEY UPDATE v=%s", (new_price, new_price))
+        
+        # 4. 广播给所有设备
+        with conn.cursor() as cur:
+            cur.execute("SELECT device_id FROM devices")
+            devices = cur.fetchall()
+            
+        # 构造指令: set_rate;val=2.50
+        cmd_str = f"set_rate;val={float_price:.2f}"
+        
+        print(f"正在广播新费率: {cmd_str} 到 {len(devices)} 台设备...")
+        for dev in devices:
+            send_mqtt_cmd(dev['device_id'], cmd_str)
+            
+        return jsonify({"status": "success", "message": "费率已更新并下发"})
+        
+    except ValueError:
+        return jsonify({"status": "error", "message": "费率格式错误"}), 400
+    except Exception as e:
+        print(f"Error updating rate: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        conn.close()
+
+# ★★★ 前端轮询接口 (保持不变) ★★★
 @app.route("/api/seats_status")
 def api_seats_status():
     conn = get_db_connection()
@@ -141,7 +167,7 @@ def api_seats_status():
             return jsonify(data)
     finally: conn.close()
 
-# ★★★ 新增：前端控制接口 ★★★
+# ★★★ 前端控制接口 (保持不变) ★★★
 @app.route("/api/cmd", methods=["POST"])
 def api_cmd():
     did = request.form.get("device_id")
