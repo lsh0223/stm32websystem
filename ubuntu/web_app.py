@@ -34,7 +34,7 @@ def get_db_connection():
 # MQTT 发送助手
 def send_mqtt_cmd(device_id, action, msg_text=""):
     try:
-        client = mqtt.Client(client_id=f"web_cmd_{int(time.time())}")
+        client = mqtt.Client(client_id=f"web_cmd_{int(time.time())}_{device_id}")
         if MQTT_USER: client.username_pw_set(MQTT_USER, MQTT_PASS)
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         
@@ -48,7 +48,8 @@ def send_mqtt_cmd(device_id, action, msg_text=""):
             except:
                 client.publish(topic, f"msg:{msg_text}", qos=0)
         else:
-            # 普通指令: pc_on, checkout, maint_on 等
+            # 普通指令: pc_on, checkout, maint_on, set_rate 等
+            # 如果有附加参数（如 set_rate;val=2.0），直接发送 action 字符串
             client.publish(topic, action, qos=0)
             
         client.disconnect()
@@ -62,7 +63,44 @@ def index():
     # 首页直接显示监控大屏
     return render_template("home.html")
 
-# ★★★ 新增：前端轮询接口 ) ★★★
+# ★★★ 新增：设置页面路由 ★★★
+@app.route("/settings", methods=["GET", "POST"])
+def settings():
+    conn = get_db_connection()
+    try:
+        if request.method == "POST":
+            # 1. 获取新费率
+            new_price = request.form.get("price", "1.0")
+            try:
+                float_price = float(new_price)
+            except:
+                return "费率格式错误", 400
+
+            # 2. 更新数据库
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO config (k, v) VALUES ('price_per_min', %s) ON DUPLICATE KEY UPDATE v=%s", (new_price, new_price))
+            
+            # 3. 广播给所有设备
+            with conn.cursor() as cur:
+                cur.execute("SELECT device_id FROM devices")
+                devices = cur.fetchall()
+                
+            cmd_str = f"set_rate;val={float_price:.2f}"
+            for dev in devices:
+                send_mqtt_cmd(dev['device_id'], cmd_str)
+                
+            return redirect(url_for("settings"))
+        else:
+            # 读取当前配置
+            with conn.cursor() as cur:
+                cur.execute("SELECT v FROM config WHERE k='price_per_min'")
+                row = cur.fetchone()
+                current_price = row['v'] if row else "1.0"
+            return render_template("settings.html", price=current_price)
+    finally:
+        conn.close()
+
+# ★★★ 新增：前端轮询接口 ★★★
 @app.route("/api/seats_status")
 def api_seats_status():
     conn = get_db_connection()
@@ -98,7 +136,7 @@ def api_seats_status():
                     "offline": is_offline,
                     "pc": r['pc_status'],      # 电脑状态
                     "light": r['light_status'],# 灯状态
-                    "human": r['human_status'] # ★★★ 新增：红外人体状态 (0=无人, 1=有人) ★★★
+                    "human": r['human_status'] # 红外人体状态
                 }
             return jsonify(data)
     finally: conn.close()
@@ -283,8 +321,6 @@ def broadcast():
         if request.method == "POST":
             scope = request.form.get("scope", "all")
             target_device = request.form.get("device_id", "").strip()
-            
-            # ★★★ 修复点：尝试获取 'text' (数据库字段名) 或 'content'，并去除空格
             message = request.form.get("text", "") or request.form.get("content", "")
             message = message.strip()
             

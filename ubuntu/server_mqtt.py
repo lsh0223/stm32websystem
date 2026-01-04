@@ -27,7 +27,8 @@ DB_USER = "root"
 DB_PASS = "123456"
 DB_NAME = "netbar"
 
-PRICE_PER_MIN  = 1.0
+# 移除硬编码，改用动态获取
+# PRICE_PER_MIN  = 1.0 
 MIN_BALANCE    = 1.0
 SMOKE_ALARM_TH = 60
 
@@ -42,6 +43,22 @@ def get_db_connection():
         host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, database=DB_NAME,
         charset="utf8mb4", autocommit=True, cursorclass=pymysql.cursors.DictCursor
     )
+
+def get_current_price() -> float:
+    """从数据库读取当前费率"""
+    conn = get_db_connection()
+    price = 1.0
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT v FROM config WHERE k='price_per_min'")
+            row = cur.fetchone()
+            if row:
+                price = float(row['v'])
+    except Exception as e:
+        logging.error(f"Error getting price: {e}")
+    finally:
+        conn.close()
+    return price
 
 def parse_kv_payload(payload: str) -> Dict[str, str]:
     result = {}
@@ -98,8 +115,10 @@ def close_session_if_exists(device_id: str, reason: str = "normal", duration_sec
     duration_sec = int(delta.total_seconds())
     if duration_sec < 0: duration_sec = 0
     
-    fee = round(duration_sec / 60.0 * PRICE_PER_MIN, 2)
-    logging.info(f"SETTLE: Device={device_id}, RealSec={duration_sec}, Fee={fee}, Reason={reason}")
+    # ★★★ 修改：使用动态费率 ★★★
+    price = get_current_price()
+    fee = round(duration_sec / 60.0 * price, 2)
+    logging.info(f"SETTLE: Device={device_id}, RealSec={duration_sec}, Fee={fee}, Reason={reason}, Rate={price}")
 
     conn = get_db_connection()
     try:
@@ -120,7 +139,7 @@ def save_state_to_db(device_id: str, fields: Dict[str, str], raw_payload: str):
     iu = int(fields.get("iu", "0") or 0)
     sm = int(fields.get("sm", "0") or 0)
     sec = int(fields.get("sec", "0") or 0)
-    al = int(fields.get("al", "0") or 0)  # 获取 STM32 发来的报警标志
+    al = int(fields.get("al", "0") or 0)
 
     conn = get_db_connection()
     try:
@@ -130,19 +149,16 @@ def save_state_to_db(device_id: str, fields: Dict[str, str], raw_payload: str):
             prev_sec = int(row["current_sec"]) if row else 0
             prev_status = int(row["current_status"]) if row else 0
             
-            # ★★★ 状态判断逻辑修复 ★★★
             status = 0
             if iu == 1: status = 1      # 上机中
             if sm >= SMOKE_ALARM_TH: status = 2  # 烟雾报警
-            if al == 1: status = 2      # 占座报警 (STM32 发来的)
+            if al == 1: status = 2      # 占座报警
 
             cur.execute("""INSERT INTO devices (device_id, seat_name, current_status, pc_status, light_status, human_status, smoke_percent, current_sec, current_fee, last_update) 
                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()) 
                            ON DUPLICATE KEY UPDATE current_status=VALUES(current_status), pc_status=VALUES(pc_status), light_status=VALUES(light_status), human_status=VALUES(human_status), smoke_percent=VALUES(smoke_percent), current_sec=VALUES(current_sec), current_fee=VALUES(current_fee), last_update=NOW()""",
                         (device_id, device_id, status, int(fields.get("pc",0)), int(fields.get("lt",0)), int(fields.get("hm",0)), sm, sec, float(fields.get("fee",0))))
             
-            # ★★★ 新增：记录烟雾报警日志 ★★★
-            # 为了防止日志刷屏，只在状态从 非2 变为 2 时记录
             if status == 2 and sm >= SMOKE_ALARM_TH and prev_status != 2:
                 cur.execute("INSERT INTO alarm_log (device_id, alarm_type, message, created_at) VALUES (%s, %s, %s, NOW())", 
                             (device_id, "SMOKE", f"烟雾浓度过高: {sm}%"))
@@ -161,14 +177,10 @@ def save_state_to_db(device_id: str, fields: Dict[str, str], raw_payload: str):
                     cur.execute("SELECT username, balance FROM users WHERE card_uid=%s", (session["card_uid"],))
                     u = cur.fetchone()
                     if u:
-                        # ★★★ 修复：改用 card_ok 并带上 uid，确保设备端能完整恢复显示 ★★★
                         cmd = f"card_ok;uid={session['card_uid']};name={u['username']};balance={float(u['balance']):.2f};sec={server_sec}"
                         send_mqtt(device_id, "cmd", cmd)
             finally: conn.close()
             
-        # =========================================================================
-        # ★★★ 核心修复：实时余额监控与自动下机 ★★★
-        # =========================================================================
         conn = get_db_connection()
         force_checkout = False
         try:
@@ -177,26 +189,20 @@ def save_state_to_db(device_id: str, fields: Dict[str, str], raw_payload: str):
                 u = cur.fetchone()
                 if u:
                     current_balance = float(u["balance"])
-                    # 计算当前已用费 (根据设备上报的 sec，按分钟计费)
-                    current_fee = (sec / 60.0) * PRICE_PER_MIN
+                    # ★★★ 修改：使用动态费率计算 ★★★
+                    price = get_current_price()
+                    current_fee = (sec / 60.0) * price
                     
-                    # 检查是否欠费 (当费用 >= 余额时停止)
                     if current_fee >= current_balance and current_balance >= 0:
-                        logging.warning(f"BALANCE LIMIT: Dev={device_id}, Fee={current_fee}, Bal={current_balance}. Force Checkout.")
+                        logging.warning(f"BALANCE LIMIT: Dev={device_id}, Fee={current_fee:.2f}, Bal={current_balance}, Rate={price}. Force Checkout.")
                         force_checkout = True
         finally: conn.close()
         
         if force_checkout:
-            # 1. 立即通知设备下机
             send_mqtt(device_id, "cmd", "checkout;code=no_bal;msg=余额耗尽已下机")
-            # 2. 服务器端强制结算
             close_session_if_exists(device_id, reason="balance_empty")
             
     else:
-        # =========================================================================
-        # ★★★ 核心修复：僵尸状态保护 ★★★
-        # 如果服务器认为没有订单，但设备仍上报"使用中(iu=1)"，则强制复位设备
-        # =========================================================================
         if iu == 1:
             logging.warning(f"ZOMBIE DETECTED: Device {device_id} reports usage but no session found. Sending reset.")
             send_mqtt(device_id, "cmd", "checkout;code=sync;msg=状态同步复位")
@@ -242,11 +248,14 @@ def handle_card_swipe(device_id: str, payload: str):
                 else:
                     create_session(device_id, card_uid, user["username"])
                     cur.execute("UPDATE devices SET current_status=1, current_user_id=%s, last_update=NOW() WHERE device_id=%s", (user["id"], device_id))
+                    # ★★★ 新增：首次上机时，可以顺便发送 set_rate (可选)，或者设备默认费率已同步
                     send_mqtt(device_id, "cmd", f"card_ok;uid={card_uid};name={user['username']};balance={float(user['balance']):.2f};sec=0")
     finally: conn.close()
 
 def handle_debug(device_id: str, payload: str):
     if "sync" in payload:
+        # 设备重连时，如果正在使用，也顺便同步一下当前费率 (可选优化)
+        # 这里只保留原有恢复会话逻辑
         session = get_active_session(device_id)
         if session:
             now = datetime.datetime.now()
@@ -257,7 +266,6 @@ def handle_debug(device_id: str, payload: str):
                     cur.execute("SELECT username, balance FROM users WHERE card_uid=%s", (session["card_uid"],))
                     u = cur.fetchone()
                     if u:
-                        # ★★★ 修复：同上，带上 uid ★★★
                         cmd = f"card_ok;uid={session['card_uid']};name={u['username']};balance={float(u['balance']):.2f};sec={server_sec}"
                         send_mqtt(device_id, "cmd", cmd)
             finally: conn.close()

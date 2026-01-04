@@ -17,11 +17,14 @@ volatile u8 esp8266_remote_card_ok_flag    = 0;
 volatile u8 esp8266_remote_card_err_flag   = 0;
 volatile u8 esp8266_remote_msg_flag        = 0;
 
+// ★★★ 新增：定义费率变量 ★★★
+volatile u8 esp8266_remote_set_rate_flag   = 0;
+volatile float esp8266_remote_rate_val     = 1.0f; // 默认1.0
+
 char esp8266_remote_msg[32];
 char esp8266_card_err_msg[32];
 char esp8266_remote_user_name[32];
 char esp8266_remote_balance_str[16];
-// ★★★ 新增：定义 UID 变量内存，解决 Linker Error ★★★
 char esp8266_remote_uid[32]; 
 volatile u32 esp8266_remote_restore_sec    = 0;
 
@@ -274,6 +277,7 @@ void ESP8266_CheckRemoteCmd(void) {
     char *buf = (char *)esp8266_rx_buf;
     char *msg_start;
     char temp_sec[16];
+    char temp_val[16];
 
     if (esp8266_rx_len == 0) return;
 
@@ -287,12 +291,19 @@ void ESP8266_CheckRemoteCmd(void) {
         if (strstr(buf, "maint_on") != NULL) esp8266_remote_maint_on_flag = 1;
         if (strstr(buf, "maint_off") != NULL) esp8266_remote_maint_off_flag = 1;
 
+        // ★★★ 新增：解析 set_rate 指令 ★★★
+        if (strstr(buf, "set_rate") != NULL) {
+            esp8266_remote_set_rate_flag = 1;
+            extract_value(buf, "val=", temp_val, 16);
+            if (temp_val[0]) {
+                sscanf(temp_val, "%f", &esp8266_remote_rate_val);
+            }
+        }
+
         if (strstr(buf, "card_ok") != NULL || strstr(buf, "restore_session") != NULL) {
             esp8266_remote_card_ok_flag = 1;
             extract_value(buf, "name=", esp8266_remote_user_name, 32);
             extract_value(buf, "balance=", esp8266_remote_balance_str, 16);
-            
-            // ★★★ 新增：解析服务器发来的 UID ★★★
             extract_value(buf, "uid=", esp8266_remote_uid, 32); 
 
             temp_sec[0] = 0;

@@ -14,7 +14,11 @@
 
 // --- UI 坐标定义 ---
 void LCD_Display_Dir(u8 dir);  
-#define PRICE_PER_MIN       1       
+
+// ★★★ 修改：移除宏定义，改为变量，默认 1.0 ★★★
+// #define PRICE_PER_MIN       1  
+float g_price_per_min = 1.0f;     
+
 #define BTN_PC_X1           20
 #define BTN_PC_Y1           170
 #define BTN_PC_X2           140
@@ -40,7 +44,6 @@ void LCD_Display_Dir(u8 dir);
 #define CONF_BTN_CANCEL_X2  (CONF_X2  - 20)
 #define CONF_BTN_CANCEL_Y2  (CONF_Y2  - 20)
 
-// ★★★ 新增：声明外部变量 (需要在 esp8266.c 中定义此缓冲) ★★★
 extern char esp8266_remote_uid[32]; 
 
 // --- 类型定义 ---
@@ -106,7 +109,6 @@ static void App_HandleTouch(void);
 static void Netbar_Publish_SeatState(void);      
 static void App_Task_1s(void);                   
 static void UID_ToHex(const u8 *uid, char *out);
-// ★★★ 新增：Hex字符串转Byte数组辅助函数声明 ★★★
 static void UID_HexStr_To_Bytes(const char *str, u8 *out_uid);
 
 // --- 主函数 ---
@@ -207,6 +209,7 @@ static void App_Task_1s(void)
     u16 smoke_adc;
     u8  smoke_percent;
     float bal_f = 0.0f;
+    char msg_buf[32];
 
     // 重置逻辑
     if (esp8266_remote_reset_flag) {
@@ -219,6 +222,28 @@ static void App_Task_1s(void)
         UI_ShowServerMsg("系统已重置");
         g_server_msg_secs = 3; 
         return;                 
+    }
+
+    // ★★★ 新增：费率更新逻辑 ★★★
+    if (esp8266_remote_set_rate_flag) {
+        esp8266_remote_set_rate_flag = 0;
+        g_price_per_min = esp8266_remote_rate_val;
+        sprintf(msg_buf, "费率更新: %.1f元/分", g_price_per_min);
+        UI_ShowServerMsg(msg_buf);
+        g_server_msg_secs = 3;
+        
+        // 刷新当前界面以显示新费率
+        if (g_screen == SCREEN_WELCOME) UI_DrawWelcomeStatic();
+        else if (g_screen == SCREEN_INUSE) {
+            UI_DrawInuseStatic(); // 重绘背景和标签
+            UI_UpdateStateLine(); 
+            UI_UpdateUserLine(); 
+            UI_UpdateCardLine(); 
+            UI_UpdateBalanceLine(); 
+            UI_UpdateRuntimeAndFee(); 
+            UI_UpdatePCButton(); 
+            UI_UpdateLightButton();
+        }
     }
 
     // 维护模式切换
@@ -284,10 +309,7 @@ static void App_Task_1s(void)
         esp8266_remote_card_ok_flag = 0;
         g_wait_card_auth = 0;
         
-        // ★★★ 修复2：断电重连恢复卡号信息 ★★★
-        // 如果当前g_app.has_user为0，说明不是刚才刷卡的，而是服务器发来的恢复指令
         if (g_app.has_user == 0) {
-            // 解析服务器发来的UID (例如 "1A2B3C4D")
             UID_HexStr_To_Bytes(esp8266_remote_uid, g_app.uid);
             g_app.has_user = 1;
         }
@@ -305,11 +327,9 @@ static void App_Task_1s(void)
             g_screen = SCREEN_INUSE;
             g_confirm = CONFIRM_NONE;
             UI_DrawInuseStatic();
-            // 提示信息区分
             if (g_app.used_seconds > 0) UI_ShowServerMsg("会话已恢复");
             else UI_ShowServerMsg("刷卡成功");
         }
-        // 刷新所有数据，确保卡号、余额等显示出来
         UI_UpdateStateLine(); 
         UI_UpdateUserLine(); 
         UI_UpdateCardLine(); 
@@ -339,10 +359,8 @@ static void App_Task_1s(void)
         if (g_server_msg_secs == 0) UI_ClearServerMsg();
     }
 
-    // ★★★ 修复1：防止弹窗被覆盖 ★★★
     if ((g_app.state == STATE_INUSE) && (g_screen == SCREEN_INUSE)) {
         g_app.used_seconds++;
-        // 只有当【没有】烟雾报警 且 【没有】占座报警时，才刷新费用区域
         if (g_smoke_alarm == 0 && g_idle_occupy_alarm == 0) {
             UI_UpdateRuntimeAndFee();   
         }
@@ -353,35 +371,32 @@ static void App_Task_1s(void)
     smoke_adc     = Seat_Smoke_GetRaw();
     smoke_percent = Smoke_AdcToPercent(smoke_adc);
 
-    // 只有在【非维护模式】下才检测报警
     if (g_app.maint_mode == 0) 
     {
-        // 1. 烟雾报警
         if (smoke_percent >= 60) {
             if (g_smoke_alarm == 0) {
                 g_smoke_alarm = 1;
-                UI_DrawAlarmWindow("危险!", "烟雾报警"); // 弹窗
+                UI_DrawAlarmWindow("危险!", "烟雾报警");
             }
         } else {
             if (g_smoke_alarm == 1) {
                 g_smoke_alarm = 0;
-                UI_ClearAlarmWindow(); // 清除弹窗
+                UI_ClearAlarmWindow(); 
             }
         }
 
-        // 2. 占座报警
         if ((g_screen == SCREEN_WELCOME) && (g_app.state == STATE_IDLE)) {
             if (human) {
                 if (g_idle_human_seconds < 0xFFFFFFFF) g_idle_human_seconds++;
                 if ((g_idle_human_seconds >= 12) && (g_idle_occupy_alarm == 0)) {
                     g_idle_occupy_alarm = 1;
                     ESP8266_MQTT_Pub_Async("netbar/seat001/alert", "occupy_over_120s");
-                    UI_DrawAlarmWindow("警告", "请勿占座!");// 弹窗
+                    UI_DrawAlarmWindow("警告", "请勿占座!");
                 }
             } else {
                 if (g_idle_occupy_alarm == 1) {
                     g_idle_occupy_alarm = 0;
-                    UI_ClearAlarmWindow(); // 清除弹窗
+                    UI_ClearAlarmWindow(); 
                 }
                 g_idle_human_seconds = 0;
             }
@@ -392,7 +407,6 @@ static void App_Task_1s(void)
     } 
     else 
     {
-        // 维护模式：强制清除所有报警标志
         g_idle_occupy_alarm = 0;
         g_smoke_alarm = 0;
     }
@@ -409,7 +423,6 @@ static void App_Task_1s(void)
         }
     }
 
-    // 只有在【没有弹窗】且【不在维护模式】时才刷新环境数据，防止覆盖弹窗
     if (g_app.maint_mode == 0 && g_smoke_alarm == 0 && g_idle_occupy_alarm == 0) {
         if (g_screen == SCREEN_WELCOME) UI_UpdateEnvWelcome(human, smoke_percent);
         else if (g_screen == SCREEN_INUSE) UI_UpdateEnvInuse(human, smoke_percent);
@@ -480,14 +493,12 @@ static void UI_DrawAlarmWindow(const char* title, const char* msg) {
     Show_Str(x+20, y+70, 220, 16, (u8 *)msg, 16, 0);
 }
 
-// 清除报警弹窗时，强制恢复动态数据
 static void UI_ClearAlarmWindow(void) {
     if (g_screen == SCREEN_WELCOME) {
         UI_DrawWelcomeStatic();
     }
     else if (g_screen == SCREEN_INUSE) {
-        UI_DrawInuseStatic(); // 这只是画了背景框
-        // 必须补上以下数据，否则屏幕是空的
+        UI_DrawInuseStatic(); 
         UI_UpdateStateLine();
         UI_UpdateUserLine();
         UI_UpdateCardLine();
@@ -502,6 +513,7 @@ static void UI_ClearAlarmWindow(void) {
 }
 
 static void UI_DrawWelcomeStatic(void) {
+    char buf[64];
     LCD_Clear(WHITE);
     LCD_Fill(0, 0, lcddev.width - 1, 30, BLUE);
     POINT_COLOR = WHITE; BACK_COLOR = BLUE;
@@ -509,7 +521,9 @@ static void UI_DrawWelcomeStatic(void) {
     UI_UpdateWifiIcon();   
     POINT_COLOR = BLACK; BACK_COLOR = WHITE;
     Show_Str(10, 40, lcddev.width - 20, 16, (u8 *)"欢迎使用", 16, 0);
-    Show_Str(10, 60, lcddev.width - 20, 16, (u8 *)"费率: 1元/分钟(测试)", 16, 0);
+    // ★★★ 修改：动态显示费率 ★★★
+    sprintf(buf, "费率: %.1f元/分钟", g_price_per_min);
+    Show_Str(10, 60, lcddev.width - 20, 16, (u8 *)buf, 16, 0);
     Show_Str(10, 90,  80, 16, (u8 *)"座位:", 16, 0);
     Show_Str(10, 110, 80, 16, (u8 *)"烟雾:", 16, 0);
     LCD_Fill(70, 90,  lcddev.width - 10, 106, WHITE);
@@ -519,18 +533,23 @@ static void UI_DrawWelcomeStatic(void) {
     if (g_app.maint_mode) Show_Str(20, 160, lcddev.width - 40, 16, (u8 *)"维护中，请勿上机", 16, 0);
     else Show_Str(20, 160, lcddev.width - 40, 16, (u8 *)"请刷卡上机", 16, 0);
     POINT_COLOR = BLACK; BACK_COLOR  = WHITE;
-    Show_Str(10, 210, lcddev.width - 20, 16, (u8 *)"费率:1元/分钟", 16, 0);
+    // ★★★ 修改：动态显示费率 ★★★
+    sprintf(buf, "费率:%.1f元/分钟", g_price_per_min);
+    Show_Str(10, 210, lcddev.width - 20, 16, (u8 *)buf, 16, 0);
     LCD_Fill(10, 230, lcddev.width - 10, 250, WHITE);
 }
 
 static void UI_DrawInuseStatic(void) {
+    char buf[64];
     LCD_Clear(WHITE);
     LCD_Fill(0, 0, lcddev.width - 1, 30, BLUE);
     POINT_COLOR = WHITE; BACK_COLOR  = BLUE;
     Show_Str(10, 5, lcddev.width - 90, 24, (u8 *)"上机中", 24, 0); 
     UI_UpdateWifiIcon();
     POINT_COLOR = BLACK; BACK_COLOR  = WHITE;
-    Show_Str(10, 32, lcddev.width - 20, 16, (u8 *)"费率: 1元/分钟(测试)", 16, 0);
+    // ★★★ 修改：动态显示费率 ★★★
+    sprintf(buf, "费率: %.1f元/分钟", g_price_per_min);
+    Show_Str(10, 32, lcddev.width - 20, 16, (u8 *)buf, 16, 0);
     Show_Str(10, 50,  70, 16, (u8 *)"状态:", 16, 0);
     Show_Str(10, 70,  70, 16, (u8 *)"用户:", 16, 0);
     Show_Str(10, 90,  70, 16, (u8 *)"卡号:", 16, 0);
@@ -542,7 +561,9 @@ static void UI_DrawInuseStatic(void) {
     LCD_DrawRectangle(BTN_EXIT_X1, BTN_EXIT_Y1, BTN_EXIT_X2, BTN_EXIT_Y2);     
     Show_Str(10, 280, 80, 16, (u8 *)"座位:", 16, 0);
     Show_Str(10, 300, 80, 16, (u8 *)"烟雾:", 16, 0);
-    Show_Str(10, 320, 120, 16, (u8 *)"费率:1元/分钟", 16, 0);
+    // ★★★ 修改：动态显示费率 ★★★
+    sprintf(buf, "费率:%.1f元/分钟", g_price_per_min);
+    Show_Str(10, 320, 120, 16, (u8 *)buf, 16, 0);
     LCD_Fill(70, 280, lcddev.width - 10, 336, WHITE);
 }
 
@@ -571,7 +592,8 @@ static void UI_UpdateStateLine(void) { u8 *text; POINT_COLOR = BLACK; BACK_COLOR
 static void UI_UpdateUserLine(void) { POINT_COLOR = BLACK; BACK_COLOR = WHITE; LCD_Fill(80, 70, 310, 86, WHITE); if (g_app.state == STATE_IDLE || g_app.has_user == 0) Show_Str(80, 70, 230, 16, (u8 *)"--", 16, 0); else Show_Str(80, 70, 230, 16, g_app.user_name, 16, 0); }
 static void UI_UpdateCardLine(void) { char buf[24]; POINT_COLOR = BLACK; BACK_COLOR = WHITE; LCD_Fill(80, 90, 310, 106, WHITE); if (g_app.has_user) { sprintf(buf, "%02X %02X %02X %02X", g_app.uid[0], g_app.uid[1], g_app.uid[2], g_app.uid[3]); LCD_ShowString(80, 90, 230, 16, 16, (u8 *)buf); } else Show_Str(80, 90, 230, 16, (u8 *)"--", 16, 0); }
 static void UI_UpdateBalanceLine(void) { char buf[24]; u32 yuan; u32 cent; POINT_COLOR = BLACK; BACK_COLOR = WHITE; LCD_Fill(80, 110, 310, 126, WHITE); yuan = g_app.balance / 100; cent = g_app.balance % 100; sprintf(buf, "%lu.%02lu 元", (unsigned long)yuan, (unsigned long)cent); Show_Str(80, 110, 230, 16, (u8 *)buf, 16, 0); }
-static void UI_UpdateRuntimeAndFee(void) { u32 min; u32 sec; u32 fee; char buf[24]; min = g_app.used_seconds / 60; sec = g_app.used_seconds % 60; POINT_COLOR = BLACK; BACK_COLOR = WHITE; LCD_Fill(80, 130, 310, 146, WHITE); sprintf(buf, "%02lu:%02lu", min, sec); Show_Str(80, 130, 230, 16, (u8 *)buf, 16, 0); fee = (g_app.used_seconds / 60) * PRICE_PER_MIN; LCD_Fill(80, 150, 310, 166, WHITE); sprintf(buf, "%4lu 元", fee); Show_Str(80, 150, 230, 16, (u8 *)buf, 16, 0); }
+// ★★★ 修改：使用动态费率计算费用 ★★★
+static void UI_UpdateRuntimeAndFee(void) { u32 min; u32 sec; u32 fee; char buf[24]; min = g_app.used_seconds / 60; sec = g_app.used_seconds % 60; POINT_COLOR = BLACK; BACK_COLOR = WHITE; LCD_Fill(80, 130, 310, 146, WHITE); sprintf(buf, "%02lu:%02lu", min, sec); Show_Str(80, 130, 230, 16, (u8 *)buf, 16, 0); fee = (u32)((g_app.used_seconds / 60.0) * g_price_per_min); LCD_Fill(80, 150, 310, 166, WHITE); sprintf(buf, "%4lu 元", fee); Show_Str(80, 150, 230, 16, (u8 *)buf, 16, 0); }
 static void UI_UpdatePCButton(void) { POINT_COLOR = BLACK; BACK_COLOR = WHITE; if (g_app.pc_on) { LCD_Fill(BTN_PC_X1 + 1, BTN_PC_Y1 + 1, BTN_PC_X2 - 1, BTN_PC_Y2 - 1, GREEN); Show_Str(BTN_PC_X1 + 20, BTN_PC_Y1 + 12, 100, 16, (u8 *)"关电脑", 16, 0); } else { LCD_Fill(BTN_PC_X1 + 1, BTN_PC_Y1 + 1, BTN_PC_X2 - 1, BTN_PC_Y2 - 1, GRAY); Show_Str(BTN_PC_X1 + 20, BTN_PC_Y1 + 12, 100, 16, (u8 *)"开电脑", 16, 0); } LCD_DrawRectangle(BTN_PC_X1, BTN_PC_Y1, BTN_PC_X2, BTN_PC_Y2); }
 static void UI_UpdateLightButton(void) { POINT_COLOR = BLACK; BACK_COLOR = WHITE; if (g_app.light_on) { LCD_Fill(BTN_LIGHT_X1 + 1, BTN_LIGHT_Y1 + 1, BTN_LIGHT_X2 - 1, BTN_LIGHT_Y2 - 1, GREEN); Show_Str(BTN_LIGHT_X1 + 20, BTN_LIGHT_Y1 + 12, 100, 16, (u8 *)"关灯光", 16, 0); } else { LCD_Fill(BTN_LIGHT_X1 + 1, BTN_LIGHT_Y1 + 1, BTN_LIGHT_X2 - 1, BTN_LIGHT_Y2 - 1, GRAY); Show_Str(BTN_LIGHT_X1 + 20, BTN_LIGHT_Y1 + 12, 100, 16, (u8 *)"开灯光", 16, 0); } LCD_DrawRectangle(BTN_LIGHT_X1, BTN_LIGHT_Y1, BTN_LIGHT_X2, BTN_LIGHT_Y2); LCD_Fill(BTN_EXIT_X1 + 1, BTN_EXIT_Y1 + 1, BTN_EXIT_X2 - 1, BTN_EXIT_Y2 - 1, RED); POINT_COLOR = WHITE; BACK_COLOR = RED; Show_Str(BTN_EXIT_X1 + 20, BTN_EXIT_Y1 + 12, 120, 16, (u8 *)"下机结算", 16, 0); LCD_DrawRectangle(BTN_EXIT_X1, BTN_EXIT_Y1, BTN_EXIT_X2, BTN_EXIT_Y2); POINT_COLOR = BLACK; BACK_COLOR = WHITE; }
 static void UI_UpdateWifiIcon(void) { WifiState_t cur; u16 base_x; u16 base_y; cur = ESP8266_GetState(); base_x = lcddev.width - 40; base_y = 6; POINT_COLOR = WHITE; BACK_COLOR = BLUE; LCD_Fill(lcddev.width - 70, 0, lcddev.width - 1, 30, BLUE); if (cur == WIFI_STATE_RUNNING) { LCD_Fill(base_x, base_y + 8, base_x + 6, base_y + 14, WHITE); LCD_Fill(base_x + 8, base_y + 4, base_x + 14, base_y + 14, WHITE); LCD_Fill(base_x + 16, base_y, base_x + 22, base_y + 14, WHITE); } else if (cur > WIFI_STATE_INIT && cur < WIFI_STATE_RUNNING) { LCD_Fill(base_x, base_y + 8, base_x + 6, base_y + 14, WHITE); LCD_Fill(base_x + 8, base_y + 4, base_x + 14, base_y + 14, WHITE); LCD_DrawRectangle(base_x + 16, base_y, base_x + 22, base_y + 14); } else { POINT_COLOR = WHITE; LCD_DrawLine(base_x, base_y, base_x + 15, base_y + 15); LCD_DrawLine(base_x, base_y + 15, base_x + 15, base_y); } POINT_COLOR = BLACK; BACK_COLOR = WHITE; }
@@ -583,14 +605,12 @@ static void App_EndSession(void) { App_InitContext(); g_screen = SCREEN_WELCOME;
 static void UI_ShowConfirmDialog(confirm_type_t type) { LCD_Fill(CONF_X1, CONF_Y1, CONF_X2, CONF_Y2, GRAY); LCD_DrawRectangle(CONF_X1, CONF_Y1, CONF_X2, CONF_Y2); POINT_COLOR = BLACK; BACK_COLOR = GRAY; if (type == CONFIRM_PC_OFF) Show_Str(CONF_X1 + 20, CONF_Y1 + 20, 220, 16, (u8 *)"确认关机？", 16, 0); else if (type == CONFIRM_EXIT) Show_Str(CONF_X1 + 20, CONF_Y1 + 20, 220, 16, (u8 *)"确认下机结算？", 16, 0); LCD_Fill(CONF_BTN_OK_X1, CONF_BTN_OK_Y1, CONF_BTN_OK_X2, CONF_BTN_OK_Y2, GREEN); POINT_COLOR = WHITE; BACK_COLOR = GREEN; Show_Str(CONF_BTN_OK_X1 + 8, CONF_BTN_OK_Y1 + 8, 80, 16, (u8 *)"确认", 16, 0); LCD_DrawRectangle(CONF_BTN_OK_X1, CONF_BTN_OK_Y1, CONF_BTN_OK_X2, CONF_BTN_OK_Y2); LCD_Fill(CONF_BTN_CANCEL_X1, CONF_BTN_CANCEL_Y1, CONF_BTN_CANCEL_X2, CONF_BTN_CANCEL_Y2, RED); POINT_COLOR = WHITE; BACK_COLOR = RED; Show_Str(CONF_BTN_CANCEL_X1 + 8, CONF_BTN_CANCEL_Y1 + 8, 80, 16, (u8 *)"取消", 16, 0); LCD_DrawRectangle(CONF_BTN_CANCEL_X1, CONF_BTN_CANCEL_Y1, CONF_BTN_CANCEL_X2, CONF_BTN_CANCEL_Y2); POINT_COLOR = BLACK; BACK_COLOR = WHITE; }
 static void App_HandleTouch(void) { u8 is_down; u16 x, y; if (tp_dev.scan(0)) { is_down = (tp_dev.sta & TP_PRES_DOWN) ? 1 : 0; x = tp_dev.x[0]; y = tp_dev.y[0]; } else { is_down = 0; x = 0; y = 0; } if (is_down) { if (!g_touch_down) { g_touch_down = 1; if (g_screen == SCREEN_INUSE) { if ((x > BTN_PC_X1) && (x < BTN_PC_X2) && (y > BTN_PC_Y1) && (y < BTN_PC_Y2)) { if (!g_app.pc_on) { g_app.pc_on = 1; Seat_PC_Set(1); UI_UpdatePCButton(); } else { g_confirm = CONFIRM_PC_OFF; g_screen = SCREEN_CONFIRM; UI_ShowConfirmDialog(g_confirm); } } else if ((x > BTN_LIGHT_X1) && (x < BTN_LIGHT_X2) && (y > BTN_LIGHT_Y1) && (y < BTN_LIGHT_Y2)) { g_app.light_on = g_app.light_on ? 0 : 1; Seat_Light_Set(g_app.light_on); UI_UpdateLightButton(); } else if ((x > BTN_EXIT_X1) && (x < BTN_EXIT_X2) && (y > BTN_EXIT_Y1) && (y < BTN_EXIT_Y2)) { if (g_app.state == STATE_INUSE) { g_confirm = CONFIRM_EXIT; g_screen = SCREEN_CONFIRM; UI_ShowConfirmDialog(g_confirm); } } } else if (g_screen == SCREEN_CONFIRM) { if ((x > CONF_BTN_OK_X1) && (x < CONF_BTN_OK_X2) && (y > CONF_BTN_OK_Y1) && (y < CONF_BTN_OK_Y2)) { if (g_confirm == CONFIRM_PC_OFF) { g_app.pc_on = 0; Seat_PC_Set(0); g_screen = SCREEN_INUSE; g_confirm = CONFIRM_NONE; UI_DrawInuseStatic(); UI_UpdateStateLine(); UI_UpdateUserLine(); UI_UpdateCardLine(); UI_UpdateBalanceLine(); UI_UpdateRuntimeAndFee(); UI_UpdatePCButton(); UI_UpdateLightButton(); } else if (g_confirm == CONFIRM_EXIT) App_EndSession(); } else if ((x > CONF_BTN_CANCEL_X1) && (x < CONF_BTN_CANCEL_X2) && (y > CONF_BTN_CANCEL_Y1) && (y < CONF_BTN_CANCEL_Y2)) { g_screen = SCREEN_INUSE; g_confirm = CONFIRM_NONE; UI_DrawInuseStatic(); UI_UpdateStateLine(); UI_UpdateUserLine(); UI_UpdateCardLine(); UI_UpdateBalanceLine(); UI_UpdateRuntimeAndFee(); UI_UpdatePCButton(); UI_UpdateLightButton(); } } } } else g_touch_down = 0; }
 
-static void Netbar_Publish_SeatState(void) { char payload[96]; u8 human; u16 smoke_adc; u8 smoke_percent; u8 iu; u32 used_seconds; u32 fee; u8 alarm_active; if (ESP8266_GetState() != WIFI_STATE_RUNNING) return; human = Seat_Radar_Get(); smoke_adc = Seat_Smoke_GetRaw(); smoke_percent = Smoke_AdcToPercent(smoke_adc); iu = (g_app.state == STATE_INUSE) ? 1 : 0; used_seconds = g_app.used_seconds; fee = (used_seconds / 60) * PRICE_PER_MIN; alarm_active = g_idle_occupy_alarm || g_smoke_alarm; sprintf(payload, "s=1;iu=%d;pc=%d;lt=%d;hm=%d;sm=%d;sec=%lu;fee=%lu;al=%d", iu, g_app.pc_on, g_app.light_on, human, smoke_percent, used_seconds, fee, alarm_active); publish_seq++; ESP8266_MQTT_Pub_Async("netbar/seat001/state", payload); }
+static void Netbar_Publish_SeatState(void) { char payload[96]; u8 human; u16 smoke_adc; u8 smoke_percent; u8 iu; u32 used_seconds; u32 fee; u8 alarm_active; if (ESP8266_GetState() != WIFI_STATE_RUNNING) return; human = Seat_Radar_Get(); smoke_adc = Seat_Smoke_GetRaw(); smoke_percent = Smoke_AdcToPercent(smoke_adc); iu = (g_app.state == STATE_INUSE) ? 1 : 0; used_seconds = g_app.used_seconds; fee = (u32)((used_seconds / 60.0) * g_price_per_min); alarm_active = g_idle_occupy_alarm || g_smoke_alarm; sprintf(payload, "s=1;iu=%d;pc=%d;lt=%d;hm=%d;sm=%d;sec=%lu;fee=%lu;al=%d", iu, g_app.pc_on, g_app.light_on, human, smoke_percent, used_seconds, fee, alarm_active); publish_seq++; ESP8266_MQTT_Pub_Async("netbar/seat001/state", payload); }
 
-// ★★★ 新增：Hex字符串转Byte数组辅助函数 ★★★
 static void UID_HexStr_To_Bytes(const char *str, u8 *out_uid) {
     int i;
     unsigned int val;
     for (i = 0; i < 4; i++) {
-        // 每次读2个字符，格式化为16进制
         if (sscanf(str + i * 2, "%02x", &val) == 1) {
             out_uid[i] = (u8)val;
         } else {
