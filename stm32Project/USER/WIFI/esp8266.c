@@ -21,6 +21,8 @@ char esp8266_remote_msg[32];
 char esp8266_card_err_msg[32];
 char esp8266_remote_user_name[32];
 char esp8266_remote_balance_str[16];
+// ★★★ 新增：定义 UID 变量内存，解决 Linker Error ★★★
+char esp8266_remote_uid[32]; 
 volatile u32 esp8266_remote_restore_sec    = 0;
 
 volatile WifiState_t g_net_state = WIFI_STATE_RESET;
@@ -133,7 +135,6 @@ void ESP8266_Init_Async(void) {
     g_net_state = WIFI_STATE_RESET;
     g_state_tick = GetSysMs();
     
-    // ★★★ 核心修复：重置时清空待发送队列，防止重连后立即发送旧数据导致报错 ★★★
     g_pub_pending = 0; 
     ESP8266_ClearBuf();
 }
@@ -290,6 +291,10 @@ void ESP8266_CheckRemoteCmd(void) {
             esp8266_remote_card_ok_flag = 1;
             extract_value(buf, "name=", esp8266_remote_user_name, 32);
             extract_value(buf, "balance=", esp8266_remote_balance_str, 16);
+            
+            // ★★★ 新增：解析服务器发来的 UID ★★★
+            extract_value(buf, "uid=", esp8266_remote_uid, 32); 
+
             temp_sec[0] = 0;
             extract_value(buf, "sec=", temp_sec, 16);
             if (temp_sec[0] != 0) sscanf(temp_sec, "%lu", &esp8266_remote_restore_sec);

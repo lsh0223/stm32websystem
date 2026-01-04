@@ -7,8 +7,8 @@
 #include <stdarg.h>
 
 // 配置参数
-#define WIFI_SSID           "9636"        // 请修改为你的WIFI名称
-#define WIFI_PASS           "123456789abcc"        // 请修改为你的WIFI密码
+#define WIFI_SSID           "9636"            // 请修改为你的WIFI名称
+#define WIFI_PASS           "123456789abcc"   // 请修改为你的WIFI密码
 #define MQTT_BROKER_HOST    "1.14.163.35"     // 服务器IP
 #define MQTT_BROKER_PORT    1883
 #define MQTT_CLIENT_ID      "seat001"
@@ -45,6 +45,8 @@ extern char esp8266_remote_msg[32];
 extern char esp8266_card_err_msg[32];
 extern char esp8266_remote_user_name[32];
 extern char esp8266_remote_balance_str[16];
+// ★★★ 新增：声明 UID 变量，解决 main.c 报错 ★★★
+extern char esp8266_remote_uid[32]; 
 extern volatile u32 esp8266_remote_restore_sec;
 
 // 函数接口
@@ -57,7 +59,6 @@ u8 ESP8266_MQTT_Pub_Async(const char *topic, const char *payload);
 
 WifiState_t ESP8266_GetState(void);
 
-// 兼容旧代码的空函数(如果不需要可删除)
 void ESP8266_DebugDump(void);
 
 #endif
