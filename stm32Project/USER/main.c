@@ -9,6 +9,7 @@
 #include "seat_bsp.h"
 #include "rfid_app.h"
 #include "esp8266.h"
+#include "24cxx.h"      // ★★★ 新增：引入EEPROM驱动头文件
 #include <string.h>
 #include <stdio.h>
 
@@ -80,6 +81,37 @@ static u32 g_inuse_nohuman_seconds = 0;
 static u32 publish_seq = 0;
 static u32 g_card_cooldown_tick    = 0;
 
+// --- EEPROM 存储辅助函数 (新增) ---
+// 保存地址：从 0x50 开始，占用4个字节
+#define RATE_SAVE_ADDR 0x50 
+
+// 将 float 转换为字节并写入 EEPROM
+void Save_Rate_To_EEPROM(float price) {
+    u8 *p = (u8*)&price; // 利用指针将float视为字节数组
+    u8 i;
+    for(i=0; i<4; i++) {
+        AT24CXX_WriteOneByte(RATE_SAVE_ADDR + i, p[i]);
+        delay_ms(10); // 等待写入完成
+    }
+}
+
+// 从 EEPROM 读取字节并还原为 float
+float Read_Rate_From_EEPROM(void) {
+    float price;
+    u8 *p = (u8*)&price;
+    u8 i;
+    for(i=0; i<4; i++) {
+        p[i] = AT24CXX_ReadOneByte(RATE_SAVE_ADDR + i);
+    }
+    
+    // 数据合法性校验 (防止第一次运行读出乱码)
+    // 如果读出来是 NaN 或者 负数 或者 极大值，说明没存过，返回默认 1.0
+    if(price < 0.01f || price > 1000.0f || price != price) { 
+        return 1.0f; 
+    }
+    return price;
+}
+
 // --- 函数声明 ---
 static void App_InitContext(void);
 static void UI_DrawSplashScreen(void);
@@ -127,6 +159,10 @@ int main(void)
     Seat_BSP_Init();      
     RFID_AppInit();       
     LCD_Init();
+    
+    // ★★★ 新增：初始化 EEPROM ★★★
+    AT24CXX_Init();
+    
     LCD_Display_Dir(0);   
     LCD_Clear(WHITE);
 
@@ -142,6 +178,11 @@ int main(void)
     // 2. 再显示开机画面
     UI_DrawSplashScreen();
     delay_ms(2000); 
+    
+    // ★★★ 新增：开机读取保存的费率 ★★★
+    if(AT24CXX_Check() == 0) {
+        g_price_per_min = Read_Rate_From_EEPROM();
+    }
 
     TP_Init();            
     App_InitContext();    
@@ -227,7 +268,13 @@ static void App_Task_1s(void)
     // ★★★ 新增：费率更新逻辑 ★★★
     if (esp8266_remote_set_rate_flag) {
         esp8266_remote_set_rate_flag = 0;
+        
+        // 1. 更新全局变量
         g_price_per_min = esp8266_remote_rate_val;
+        
+        // 2. ★★★ 新增：立即保存到 EEPROM ★★★
+        Save_Rate_To_EEPROM(g_price_per_min);
+        
         sprintf(msg_buf, "费率更新: %.1f元/分", g_price_per_min);
         UI_ShowServerMsg(msg_buf);
         g_server_msg_secs = 3;

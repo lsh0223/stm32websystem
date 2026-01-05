@@ -1,6 +1,6 @@
 Dependencies for Project 'Template', Target 'Template': (DO NOT MODIFY !)
 CompilerVersion: 5060960::V5.06 update 7 (build 960)::.\ARMCC
-F (.\main.c)(0x695A5767)(--c99 -c --cpu Cortex-M4.fp.sp -D__MICROLIB -g -O0 --apcs=interwork -I ..\CORE -I ..\SYSTEM\delay -I ..\SYSTEM\sys -I ..\SYSTEM\usart -I ..\USER -I ..\FWLIB\inc -I .\LCD -I .\SPI -I .\TEXT -I .\W25QXX -I .\24CXX -I .\IIC -I .\TOUCH -I .\RFID -I .\seat_bsp -I .\WIFI-ID:\Keil5\Pack\Keil\STM32F4xx_DFP\2.16.0\Drivers\CMSIS\Device\ST\STM32F4xx\Include-ID:\Keil5\Pack\Keil\STM32F4xx_DFP\2.16.0\Device\Include-D__UVISION_VERSION="537" -DSTM32F407xx -DSTM32F40_41xxx -DUSE_STDPERIPH_DRIVER-o ..\obj\main.o --omf_browse ..\obj\main.crf --depend ..\obj\main.d)
+F (.\main.c)(0x695A741B)(--c99 -c --cpu Cortex-M4.fp.sp -D__MICROLIB -g -O0 --apcs=interwork -I ..\CORE -I ..\SYSTEM\delay -I ..\SYSTEM\sys -I ..\SYSTEM\usart -I ..\USER -I ..\FWLIB\inc -I .\LCD -I .\SPI -I .\TEXT -I .\W25QXX -I .\24CXX -I .\IIC -I .\TOUCH -I .\RFID -I .\seat_bsp -I .\WIFI-ID:\Keil5\Pack\Keil\STM32F4xx_DFP\2.16.0\Drivers\CMSIS\Device\ST\STM32F4xx\Include-ID:\Keil5\Pack\Keil\STM32F4xx_DFP\2.16.0\Device\Include-D__UVISION_VERSION="537" -DSTM32F407xx -DSTM32F40_41xxx -DUSE_STDPERIPH_DRIVER-o ..\obj\main.o --omf_browse ..\obj\main.crf --depend ..\obj\main.d)
 I (..\SYSTEM\sys\sys.h)(0x5821A2C0)
 I (..\USER\stm32f4xx.h)(0x5821A2C0)
 I (..\CORE\core_cm4.h)(0x5821A2C0)
@@ -53,6 +53,8 @@ I (.\RFID\rfid_app.h)(0x6932E019)
 I (.\WIFI\esp8266.h)(0x695A5722)
 I (D:\Keil5\Core\ARM\ARMCC\include\string.h)(0x6025237E)
 I (D:\Keil5\Core\ARM\ARMCC\include\stdarg.h)(0x60252376)
+I (.\24CXX\24cxx.h)(0x5821A2CC)
+I (.\IIC\myiic.h)(0x5821A2CC)
 F (.\stm32f4xx_it.c)(0x69341A3A)(--c99 -c --cpu Cortex-M4.fp.sp -D__MICROLIB -g -O0 --apcs=interwork -I ..\CORE -I ..\SYSTEM\delay -I ..\SYSTEM\sys -I ..\SYSTEM\usart -I ..\USER -I ..\FWLIB\inc -I .\LCD -I .\SPI -I .\TEXT -I .\W25QXX -I .\24CXX -I .\IIC -I .\TOUCH -I .\RFID -I .\seat_bsp -I .\WIFI-ID:\Keil5\Pack\Keil\STM32F4xx_DFP\2.16.0\Drivers\CMSIS\Device\ST\STM32F4xx\Include-ID:\Keil5\Pack\Keil\STM32F4xx_DFP\2.16.0\Device\Include-D__UVISION_VERSION="537" -DSTM32F407xx -DSTM32F40_41xxx -DUSE_STDPERIPH_DRIVER-o ..\obj\stm32f4xx_it.o --omf_browse ..\obj\stm32f4xx_it.crf --depend ..\obj\stm32f4xx_it.d)
 I (stm32f4xx_it.h)(0x5821A2C0)
 I (stm32f4xx.h)(0x5821A2C0)

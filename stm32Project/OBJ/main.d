@@ -52,3 +52,5 @@
 ..\obj\main.o: .\WIFI\esp8266.h
 ..\obj\main.o: D:\Keil5\Core\ARM\ARMCC\Bin\..\include\string.h
 ..\obj\main.o: D:\Keil5\Core\ARM\ARMCC\Bin\..\include\stdarg.h
+..\obj\main.o: .\24CXX\24cxx.h
+..\obj\main.o: .\IIC\myiic.h
