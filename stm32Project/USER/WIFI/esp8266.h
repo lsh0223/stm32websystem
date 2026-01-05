@@ -11,7 +11,7 @@
 #define WIFI_PASS           "123456789abcc"   // 请修改为你的WIFI密码
 #define MQTT_BROKER_HOST    "1.14.163.35"     // 服务器IP
 #define MQTT_BROKER_PORT    1883
-#define MQTT_CLIENT_ID      "seat001"
+#define MQTT_CLIENT_ID      "seat003"
 #define MQTT_LINK_ID        0
 #define MQTT_RECONNECT      1
 
