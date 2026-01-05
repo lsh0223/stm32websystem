@@ -11,7 +11,7 @@
  Target Server Version : 80044
  File Encoding         : 65001
 
- Date: 04/01/2026 18:51:46
+ Date: 05/01/2026 16:27:39
 */
 
 SET NAMES utf8mb4;
@@ -28,6 +28,7 @@ CREATE TABLE `alarm_log`  (
   `level` tinyint(0) NOT NULL DEFAULT 0,
   `message` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `created_at` datetime(0) NOT NULL DEFAULT CURRENT_TIMESTAMP(0),
+  `is_resolved` tinyint(0) NULL DEFAULT 0,
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `idx_device_time`(`device_id`, `created_at`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 214 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
