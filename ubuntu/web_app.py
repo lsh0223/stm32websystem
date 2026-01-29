@@ -478,28 +478,55 @@ def api_cmd():
     if not did or not cmd: return jsonify({"status": "error", "message": "参数缺失"}), 400
     conn = get_db_connection()
     try:
+        # 处理维护模式开关
         if cmd == "maint_on":
             with conn.cursor() as cur: cur.execute("UPDATE devices SET is_maintenance=1, current_status=0 WHERE device_id=%s", (did,))
         elif cmd == "maint_off":
             with conn.cursor() as cur: cur.execute("UPDATE devices SET is_maintenance=0 WHERE device_id=%s", (did,))
+        
+        # === 修复核心：下机结算逻辑 ===
         if cmd == "checkout":
              with conn.cursor() as cur:
+                 # 1. 获取设备当前关联的用户ID (关键步骤)
+                 cur.execute("SELECT current_user_id FROM devices WHERE device_id=%s", (did,))
+                 dev_row = cur.fetchone()
+                 user_id = dev_row['current_user_id'] if dev_row else None
+
+                 # 2. 查找该设备当前未结束的会话
                  cur.execute("SELECT id, start_time FROM user_session_log WHERE device_id=%s AND end_time IS NULL ORDER BY id DESC LIMIT 1", (did,))
                  session = cur.fetchone()
+                 
                  if session:
                      start_time = session['start_time']
                      if isinstance(start_time, str): start_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
                      now = datetime.now()
+                     
+                     # 计算时长和费用
                      duration_sec = int((now - start_time).total_seconds())
                      cur.execute("SELECT v FROM config WHERE k='price_per_min'")
                      row = cur.fetchone()
                      rate = float(row['v']) if row else 1.0
                      fee = round((duration_sec / 60.0) * rate, 2)
+                     
+                     # 3. 更新会话日志 (记录费用)
                      cur.execute("UPDATE user_session_log SET end_time=%s, duration_sec=%s, fee=%s, end_reason='admin_stop' WHERE id=%s", (now, duration_sec, fee, session['id']))
+                     
+                     # 4. [新增] 扣除用户余额并记录消费日志 (之前缺失的部分)
+                     if user_id and fee > 0:
+                         # 扣余额
+                         cur.execute("UPDATE users SET balance = balance - %s WHERE id=%s", (fee, user_id))
+                         # 插入消费流水
+                         cur.execute("INSERT INTO consume_log (user_id, session_id, amount, created_at) VALUES (%s, %s, %s, NOW())", 
+                                     (user_id, session['id'], fee))
+
+                 # 5. 最后重置设备状态
                  cur.execute("UPDATE devices SET current_status=0, current_user_id=NULL, current_sec=0, current_fee=0 WHERE device_id=%s", (did,))
+        
+        # 发送 MQTT 命令给硬件
         send_mqtt_cmd(did, cmd, val)
         return jsonify({"status": "ok"})
     except Exception as e:
+        print(f"Error in api_cmd: {e}") # 打印错误日志方便调试
         return jsonify({"status": "error", "message": str(e)}), 500
     finally: conn.close()
 
