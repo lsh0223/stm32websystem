@@ -8,13 +8,18 @@
     <link href="https://cdn.bootcdn.net/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         body { background-color: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x: hidden; }
+        
+        /* --- 侧边栏样式 --- */
         .sidebar { height: 100vh; background: #2c3e50; color: #fff; position: fixed; width: 240px; overflow-y: auto; z-index: 1000; transition: all 0.3s; }
         .sidebar-header { padding: 20px; background: #1a252f; text-align: center; font-weight: bold; font-size: 1.2rem; border-bottom: 1px solid #34495e; }
         .sidebar .nav-link { color: #b8c7ce; padding: 15px 20px; border-left: 3px solid transparent; cursor: pointer; display: block; text-decoration: none; transition: 0.2s; }
         .sidebar .nav-link:hover, .sidebar .nav-link.active { background: #34495e; color: #fff; border-left-color: #3498db; }
         .sidebar .nav-link i { margin-right: 10px; width: 20px; text-align: center; }
+        
+        /* --- 主内容区域 --- */
         .main-content { margin-left: 240px; padding: 20px; transition: all 0.3s; }
         
+        /* --- 统计卡片 --- */
         .stat-card { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); display: flex; align-items: center; transition: transform 0.2s; }
         .stat-card:hover { transform: translateY(-2px); }
         .stat-icon { width: 50px; height: 50px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 24px; margin-right: 15px; }
@@ -23,6 +28,7 @@
         .bg-red-light { background: #ffebee; color: #c62828; }
         .bg-gray-light { background: #f5f5f5; color: #616161; }
         
+        /* --- 座位卡片 --- */
         .seat-card { transition: all 0.3s; border: none; box-shadow: 0 2px 8px rgba(0,0,0,0.05); border-radius: 10px; overflow: hidden; }
         .seat-card:hover { transform: translateY(-5px); box-shadow: 0 8px 20px rgba(0,0,0,0.12); }
         .card-header-custom { padding: 10px 15px; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
@@ -34,6 +40,7 @@
         .control-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; padding: 10px; }
         .btn-ctrl { padding: 5px; font-size: 0.8rem; border-radius: 6px; }
         
+        /* --- 状态颜色 --- */
         .text-active { color: #28a745 !important; }
         .text-inactive { color: #adb5bd !important; }
         .text-warning-custom { color: #ffc107 !important; }
@@ -51,6 +58,19 @@
         <div class="sidebar-header">
             <i class="fas fa-microchip"></i> 智能无人网吧
         </div>
+        
+        <div class="p-3 text-center border-bottom border-secondary">
+            <div class="mb-2">
+                <img src="https://cdn-icons-png.flaticon.com/512/149/149071.png" style="width:50px; border-radius:50%; border:2px solid #b8c7ce;">
+            </div>
+            <div class="small text-light">管理员: <strong>{{ admin_name }}</strong></div>
+            <div class="mt-2">
+                <a href="/logout" class="btn btn-danger btn-sm w-100 py-0" style="font-size: 0.8rem;">
+                    <i class="fas fa-sign-out-alt"></i> 安全退出
+                </a>
+            </div>
+        </div>
+
         <nav class="nav flex-column mt-3">
             <div class="nav-link active" onclick="switchView('dashboard', this)"><i class="fas fa-desktop"></i> 设备监控</div>
             <div class="nav-link" onclick="switchView('users', this, '/users')"><i class="fas fa-users"></i> 会员管理</div>
@@ -136,6 +156,31 @@
         </div>
     </div>
 
+    <div class="modal fade" id="renameModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-sm">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">修改设备名称</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="renameTargetId">
+                    <div class="mb-3">
+                        <label class="form-label text-muted small">设备ID (不可变)</label>
+                        <input type="text" class="form-control form-control-sm bg-light" id="renameTargetDisplay" readonly>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">新名称</label>
+                        <input type="text" class="form-control" id="renameInput" placeholder="例如: 1号机">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary w-100" onclick="submitRename()">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal fade" id="alarmPopup" tabindex="-1" data-bs-backdrop="static">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content border-danger border-3">
@@ -159,14 +204,18 @@
     <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.1.3/js/bootstrap.bundle.min.js"></script>
     <script>
         var alarmModal; 
+        var renameModal; // 重命名弹窗实例
+        var msgModal;    // 消息弹窗实例
         var lastAlarmState = false; // 记录上次是否有报警，防止弹窗无限弹
 
         document.addEventListener('DOMContentLoaded', function() {
             alarmModal = new bootstrap.Modal(document.getElementById('alarmPopup'));
+            renameModal = new bootstrap.Modal(document.getElementById('renameModal'));
+            msgModal = new bootstrap.Modal(document.getElementById('msgModal'));
             startClock(); // 启动实时时钟
         });
 
-        // ★★★ 实时时钟功能 (每秒刷新) ★★★
+        // 实时时钟
         function startClock() {
             setInterval(function() {
                 const now = new Date();
@@ -175,6 +224,7 @@
             }, 1000);
         }
 
+        // 切换视图 (Dashboard vs Iframe)
         function switchView(viewName, element, url = '') {
             $('.nav-link').removeClass('active');
             $(element).addClass('active');
@@ -186,6 +236,7 @@
             }
         }
 
+        // 格式化时间 (秒 -> HH:MM:SS)
         function formatTime(seconds) {
             if (!seconds) return "00:00";
             const h = Math.floor(seconds / 3600);
@@ -195,13 +246,14 @@
             return `${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
         }
 
+        // ★★★ 核心：更新座位状态 ★★★
         function updateSeats() {
             $.getJSON('/api/seats_status', function(data) {
                 const container = $('#devices-container');
                 container.empty();
 
                 let total = 0, using = 0, idle = 0, offline = 0;
-                let hasAlarm = false; // 本次刷新是否有报警
+                let hasAlarm = false; 
                 let alarmDetails = "";
 
                 $.each(data, function(id, info) {
@@ -219,12 +271,12 @@
                         offline++;
                         statusBadge = '<span class="badge bg-warning text-dark"><i class="fas fa-tools"></i> 维护中</span>';
                     } else if (info.status === 2) { 
-                        // ★★★ 检测到报警状态 ★★★
+                        // 报警状态
                         using++;
                         hasAlarm = true;
                         alarmDetails = `设备 ${id} 发生异常 (烟雾/占座)`;
                         statusBadge = '<span class="badge bg-danger blink">报警中</span>';
-                        cardClass = 'border-danger border-2'; // 卡片变红框
+                        cardClass = 'border-danger border-2'; 
                     } else if (info.status === 1) {
                         using++;
                         statusBadge = '<span class="badge bg-success">使用中</span>';
@@ -250,11 +302,16 @@
                         `<button class="btn btn-ctrl btn-warning w-100 text-white" onclick="control('${id}', 'light_off')"><i class="fas fa-lightbulb"></i> 关灯</button>` : 
                         `<button class="btn btn-ctrl btn-outline-secondary w-100" onclick="control('${id}', 'light_on')"><i class="fas fa-lightbulb"></i> 开灯</button>`;
 
+                    // ★★★ 获取自定义名称，如果没有则显示ID ★★★
+                    let displayName = info.seat_name ? info.seat_name : id;
+
                     const html = `
                         <div class="col-xl-3 col-lg-4 col-md-6 mb-4">
                             <div class="card seat-card ${cardClass}">
                                 <div class="card-header-custom bg-white border-bottom">
-                                    <span class="text-primary"><i class="fas fa-desktop"></i> ${id}</span>
+                                    <span class="text-primary" style="cursor:pointer" onclick="openRenameModal('${id}', '${displayName}')" title="点击重命名">
+                                        <i class="fas fa-desktop"></i> ${displayName} <i class="fas fa-pen small text-muted ms-1" style="font-size:0.7em"></i>
+                                    </span>
                                     ${statusBadge}
                                 </div>
                                 <div class="status-indicators">
@@ -278,15 +335,14 @@
                     container.append(html);
                 });
 
-                // ★★★ 触发报警弹窗逻辑 ★★★
+                // 触发报警
                 if (hasAlarm && !lastAlarmState) {
                     $('#alarm-text').text(alarmDetails);
                     alarmModal.show();
-                    // 播放简单的提示音 (可选)
-                    // const audio = new Audio('/static/alert.mp3'); audio.play().catch(e=>{});
                 }
-                lastAlarmState = hasAlarm; // 记录状态，防止一直弹
+                lastAlarmState = hasAlarm; 
 
+                // 更新顶部统计
                 $('#count-total').text(total);
                 $('#count-using').text(using);
                 $('#count-idle').text(idle);
@@ -294,6 +350,7 @@
             });
         }
 
+        // 发送控制指令
         function control(deviceId, command) {
             if ((command === 'checkout' || command === 'reset') && !confirm(`确定执行 [${command}] 吗？`)) return;
             $.post('/api/cmd', { device_id: deviceId, command: command }, function(res) {
@@ -301,7 +358,7 @@
             });
         }
 
-        var msgModal = new bootstrap.Modal(document.getElementById('msgModal'));
+        // 消息弹窗逻辑
         function openMsgModal(deviceId) {
             $('#msgTargetId').val(deviceId); $('#msgTargetDisplay').val(deviceId); $('#msgContent').val('');
             msgModal.show();
@@ -314,6 +371,31 @@
             });
         }
 
+        // ★★★ 重命名功能逻辑 ★★★
+        function openRenameModal(deviceId, currentName) {
+            $('#renameTargetId').val(deviceId);
+            $('#renameTargetDisplay').val(deviceId);
+            // 如果名字和ID一样，说明还没改过，输入框留空方便输入
+            $('#renameInput').val(deviceId === currentName ? '' : currentName);
+            renameModal.show();
+        }
+
+        function submitRename() {
+            const did = $('#renameTargetId').val();
+            const name = $('#renameInput').val();
+            if (!name) return alert("名称不能为空");
+            
+            $.post('/api/device/rename', { device_id: did, name: name }, function(res) {
+                if(res.status === 'ok') {
+                    renameModal.hide();
+                    updateSeats(); // 刷新列表
+                } else {
+                    alert('修改失败: ' + res.message);
+                }
+            });
+        }
+
+        // 定时刷新 (3秒)
         setInterval(updateSeats, 3000);
         updateSeats();
     </script>

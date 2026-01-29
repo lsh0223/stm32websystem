@@ -11,7 +11,7 @@
 #define WIFI_PASS           "123456789abcc"   // 请修改为你的WIFI密码
 #define MQTT_BROKER_HOST    "1.14.163.35"     // 服务器IP
 #define MQTT_BROKER_PORT    1883
-#define MQTT_CLIENT_ID      "seat003"
+// 注意：MQTT_CLIENT_ID 已移除，改用动态生成的 g_device_id
 #define MQTT_LINK_ID        0
 #define MQTT_RECONNECT      1
 
@@ -27,6 +27,9 @@ typedef enum {
     WIFI_STATE_ERROR        // 错误等待(稍后重试)
 } WifiState_t;
 
+// ★★★ 全局设备ID变量 (由main.c生成) ★★★
+extern char g_device_id[32];
+
 // 外部标志位
 extern volatile u8 esp8266_remote_reset_flag;
 extern volatile u8 esp8266_remote_pc_on_flag;
@@ -40,7 +43,7 @@ extern volatile u8 esp8266_remote_card_ok_flag;
 extern volatile u8 esp8266_remote_card_err_flag;
 extern volatile u8 esp8266_remote_msg_flag;
 
-// ★★★ 新增：费率设置相关 ★★★
+// 费率设置相关
 extern volatile u8 esp8266_remote_set_rate_flag;
 extern volatile float esp8266_remote_rate_val;
 
@@ -59,4 +62,3 @@ u8 ESP8266_MQTT_Pub_Async(const char *topic, const char *payload);
 void ESP8266_CheckRemoteCmd(void);
 
 #endif
-

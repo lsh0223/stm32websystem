@@ -17,9 +17,8 @@ volatile u8 esp8266_remote_card_ok_flag    = 0;
 volatile u8 esp8266_remote_card_err_flag   = 0;
 volatile u8 esp8266_remote_msg_flag        = 0;
 
-// ★★★ 新增：定义费率变量 ★★★
 volatile u8 esp8266_remote_set_rate_flag   = 0;
-volatile float esp8266_remote_rate_val     = 1.0f; // 默认1.0
+volatile float esp8266_remote_rate_val     = 1.0f; 
 
 char esp8266_remote_msg[32];
 char esp8266_card_err_msg[32];
@@ -165,6 +164,7 @@ void ESP8266_Poll(void) {
     int res;
     u32 now = GetSysMs();
     char cmd_buf[256];
+    char temp_topic[64]; // 临时变量
 
     ESP8266_CheckRemoteCmd();
 
@@ -204,7 +204,8 @@ void ESP8266_Poll(void) {
         case WIFI_STATE_MQTT_CFG:
             res = AT_Check_Status();
             if (res == 1) {
-                sprintf(cmd_buf, "AT+MQTTUSERCFG=0,1,\"%s\",\"\",\"\",0,0,\"\"\r\n", MQTT_CLIENT_ID);
+                // ★★★ 使用动态生成的 g_device_id 作为 Client ID ★★★
+                sprintf(cmd_buf, "AT+MQTTUSERCFG=0,1,\"%s\",\"\",\"\",0,0,\"\"\r\n", g_device_id);
                 AT_Send_Async(cmd_buf, "OK", 2000);
                 g_net_state = WIFI_STATE_MQTT_CONN;
             } else if (res == -1) {
@@ -228,9 +229,13 @@ void ESP8266_Poll(void) {
         case WIFI_STATE_MQTT_SUB:
             res = AT_Check_Status();
             if (res == 1) {
-                AT_Send_Async("AT+MQTTSUB=0,\"netbar/seat001/cmd\",0\r\n", "OK", 3000);
+                // ★★★ 订阅属于该设备自己的CMD topic ★★★
+                sprintf(cmd_buf, "AT+MQTTSUB=0,\"netbar/%s/cmd\",0\r\n", g_device_id);
+                AT_Send_Async(cmd_buf, "OK", 3000);
                 g_net_state = WIFI_STATE_RUNNING;
-                ESP8266_MQTT_Pub_Async("netbar/seat001/debug", "sync");
+                // 发送上线同步包
+                sprintf(temp_topic, "netbar/%s/debug", g_device_id);
+                ESP8266_MQTT_Pub_Async(temp_topic, "sync");
             } else if (res == -1) {
                 g_net_state = WIFI_STATE_ERROR;
                 g_state_tick = now;
@@ -278,10 +283,15 @@ void ESP8266_CheckRemoteCmd(void) {
     char *msg_start;
     char temp_sec[16];
     char temp_val[16];
+    char my_cmd_topic[64];
+
+    // ★★★ 构造当前设备的topic字符串 ★★★
+    sprintf(my_cmd_topic, "netbar/%s/cmd", g_device_id);
 
     if (esp8266_rx_len == 0) return;
 
-    if (strstr(buf, "netbar/seat001/cmd") != NULL) {
+    // ★★★ 只处理针对本设备的指令 ★★★
+    if (strstr(buf, my_cmd_topic) != NULL) {
         if (strstr(buf, "reset") != NULL)    esp8266_remote_reset_flag = 1;
         if (strstr(buf, "pc_on") != NULL)    esp8266_remote_pc_on_flag = 1;
         if (strstr(buf, "pc_off") != NULL)   esp8266_remote_pc_off_flag = 1;
@@ -291,7 +301,6 @@ void ESP8266_CheckRemoteCmd(void) {
         if (strstr(buf, "maint_on") != NULL) esp8266_remote_maint_on_flag = 1;
         if (strstr(buf, "maint_off") != NULL) esp8266_remote_maint_off_flag = 1;
 
-        // ★★★ 新增：解析 set_rate 指令 ★★★
         if (strstr(buf, "set_rate") != NULL) {
             esp8266_remote_set_rate_flag = 1;
             extract_value(buf, "val=", temp_val, 16);
@@ -333,7 +342,4 @@ void ESP8266_CheckRemoteCmd(void) {
              esp8266_rx_buf[0] = 0;
         }
     }
-}
-
-void ESP8266_DebugDump(void) {
 }
