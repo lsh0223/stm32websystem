@@ -428,7 +428,7 @@ static void App_Task_1s(void)
         if ((g_screen == SCREEN_WELCOME) && (g_app.state == STATE_IDLE)) {
             if (human) {
                 if (g_idle_human_seconds < 0xFFFFFFFF) g_idle_human_seconds++;
-                if ((g_idle_human_seconds >= 12) && (g_idle_occupy_alarm == 0)) {
+                if ((g_idle_human_seconds >= 3) && (g_idle_occupy_alarm == 0)) {
                     g_idle_occupy_alarm = 1;
                     // ¡ï¡ï¡ï ¶¯Ì¬Topic ¡ï¡ï¡ï
                     sprintf(topic, "netbar/%s/alert", g_device_id);
@@ -457,7 +457,7 @@ static void App_Task_1s(void)
         if (human) g_inuse_nohuman_seconds = 0;
         else {
             if (g_inuse_nohuman_seconds < 0xFFFFFFFF) g_inuse_nohuman_seconds++;
-            if (g_inuse_nohuman_seconds >= 15 * 60) {
+            if (g_inuse_nohuman_seconds >= 15 * 60 / 90) {
                 // ¡ï¡ï¡ï ¶¯Ì¬Topic ¡ï¡ï¡ï
                 sprintf(topic, "netbar/%s/alert", g_device_id);
                 ESP8266_MQTT_Pub_Async(topic, "auto_checkout_nohuman_15min");
