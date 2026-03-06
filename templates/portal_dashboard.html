@@ -1,0 +1,22 @@
+{% extends "portal_layout.html" %}
+
+{% block content %}
+<div class="card">
+    <h3>会员状态：{{ level }}</h3>
+    
+    <p><strong>尊享上机费率折扣：</strong> 
+        <span style="color:red;font-weight:bold;">
+            {% if discount == 1.0 %}
+                原价 (无折扣)
+            {% else %}
+                {{ discount * 10 | round(1) }} 折
+            {% endif %}
+        </span>
+    </p>
+
+    <p><strong>可用余额：</strong> ￥{{ user.balance }}</p>
+    <p><strong>累计充值：</strong> ￥{{ user.total_recharge }}</p>
+    <p><strong>绑定卡号：</strong> {{ user.card_uid if user.card_uid else '尚未绑定' }}</p>
+    <p><strong>身份证号：</strong> {{ user.id_card if user.id_card else '尚未绑定' }}</p>
+</div>
+{% endblock %}

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>智能无人网吧 - 用户服务中心</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; background: #f4f4f4; margin: 0; padding: 20px; }
+        .container { max-width: 600px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h2 { color: #333; text-align: center; }
+        .nav { text-align: center; margin-bottom: 20px; }
+        .nav a { margin: 0 10px; text-decoration: none; color: #007BFF; font-weight: bold; }
+        .flashes { list-style: none; padding: 0; }
+        .flashes li { background: #d4edda; color: #155724; padding: 10px; border-radius: 4px; margin-bottom: 10px; text-align: center; }
+        .flashes li.danger { background: #f8d7da; color: #721c24; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
+        .form-group input { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+        button { width: 100%; padding: 10px; background: #007BFF; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background: #0056b3; }
+        .card { background: #f9f9f9; padding: 15px; border-radius: 5px; border-left: 5px solid #007BFF; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        table th, table td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+        table th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>智能无人网吧 用户中心</h2>
+        <div class="nav">
+            {% if session.get('user_id') %}
+                <a href="/portal/dashboard">首页概览</a> | 
+                <a href="/portal/bind">绑定卡片</a> | 
+                <a href="/portal/recharge">充值中心</a> | 
+                <a href="/portal/history">消费记录</a> | 
+                <a href="/portal/logout">安全退出</a>
+            {% else %}
+                <a href="/portal/login">用户登录</a> | 
+                <a href="/portal/register">账号注册</a>
+            {% endif %}
+        </div>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <ul class="flashes">
+            {% for category, message in messages %}
+              <li class="{{ category }}">{{ message }}</li>
+            {% endfor %}
+            </ul>
+          {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>

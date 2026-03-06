@@ -1,0 +1,28 @@
+{% extends "portal_layout.html" %}
+
+{% block content %}
+<form method="POST">
+    <div class="form-group"><label>新用户名</label><input type="text" name="username" required></div>
+    <div class="form-group"><label>设置密码</label><input type="password" name="password" required></div>
+    
+    <div class="form-group">
+        <label>设置密保问题 (忘记密码时使用)</label>
+        <select name="question" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+            <option value="">-- 请选择一个密保问题 --</option>
+            <option value="我最喜欢的颜色是？">我最喜欢的颜色是？</option>
+            <option value="我父亲的名字是？">我父亲的名字是？</option>
+            <option value="我高中班主任的名字是？">我高中班主任的名字是？</option>
+            <option value="我的宠物叫什么名字？">我的宠物叫什么名字？</option>
+        </select>
+    </div>
+    
+    <div class="form-group"><label>输入密保答案</label><input type="text" name="answer" required></div>
+    
+    <div class="form-group">
+        <label style="color: #d9534f;">防刷验证码: <strong>{{ captcha_text }}</strong></label>
+        <input type="text" name="captcha" placeholder="请输入上面算术题的计算结果" required>
+    </div>
+    
+    <button type="submit">注 册</button>
+</form>
+{% endblock %}

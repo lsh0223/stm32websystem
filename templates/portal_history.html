@@ -1,0 +1,56 @@
+{% extends "portal_layout.html" %}
+
+{% block content %}
+<style>
+    .history-table th, .history-table td { padding: 8px 4px; font-size: 13px; }
+</style>
+
+<h3>上机消费记录</h3>
+<table class="history-table">
+    <tr>
+        <th>时段</th>
+        <th>机器</th>
+        <th>时长</th>
+        <th>扣费</th>
+    </tr>
+    {% for c in consumes %}
+    <tr>
+        <td style="text-align: left;">
+            <div style="font-size:12px; color:#555;">上: {{ c.start_time }}</div>
+            <div style="font-size:12px; color:#555;">下: {{ c.end_time if c.end_time else '数据异常' }}</div>
+        </td>
+        <td>{{ c.device_id }}</td>
+        <td>
+            {% if c.duration_sec != None %}
+                {% set mins = (c.duration_sec // 60) | int %}
+                {% set secs = (c.duration_sec % 60) | int %}
+                {% if mins >= 60 %}
+                    {% set hrs = (mins // 60) | int %}
+                    {% set mins = (mins % 60) | int %}
+                    {{ hrs }}时{{ mins }}分{{ secs }}秒
+                {% else %}
+                    {{ mins }}分{{ secs }}秒
+                {% endif %}
+            {% else %}
+                --
+            {% endif %}
+        </td>
+        <td style="color:red; font-weight:bold;">-{{ c.amount }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4">暂无记录</td></tr>
+    {% endfor %}
+</table>
+
+<h3 style="margin-top:20px;">账户充值记录</h3>
+<table class="history-table">
+    <tr><th>充值时间</th><th>充值金额</th><th>充值后余额</th></tr>
+    {% for r in recharges %}
+    <tr>
+        <td style="font-size:12px; color:#555;">{{ r.created_at }}</td>
+        <td style="color:green; font-weight:bold;">+{{ r.amount }}</td>
+        <td>{{ r.balance_after }}</td>
+    </tr>
+    {% else %}<tr><td colspan="3">暂无记录</td></tr>{% endfor %}
+</table>
+{% endblock %}

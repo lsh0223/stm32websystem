@@ -52,9 +52,9 @@
                                 <label class="form-label">选择目标设备</label>
                                 <select class="form-select" name="device_id" id="device_id">
                                     <option value="" disabled selected>-- 请选择设备 --</option>
-                                    {% for d in devices %}
-                                    <option value="{{ d.device_id }}">{{ d.device_id }}</option>
-                                    {% endfor %}
+									{% for d in devices %}
+									<option value="{{ d.device_id }}">{{ d.seat_name }} ({{ d.device_id }})</option>
+									{% endfor %}
                                 </select>
                             </div>
 

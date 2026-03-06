@@ -10,7 +10,7 @@ void RC522_SPI_WriteByte(u8 byte)
         RC522_SCK_L;
         if(byte & 0x80) RC522_MOSI_H;
         else RC522_MOSI_L;
-        delay_us(1); // F407速度快，稍微延时
+        delay_us(1); 
         RC522_SCK_H;
         byte <<= 1;
         delay_us(1);
@@ -100,7 +100,7 @@ void PcdReset(void)
     delay_us(1);
 }
 
-// 初始化函数 (适配 STM32F407)
+// 初始化函数
 void RC522_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStructure;
@@ -238,7 +238,6 @@ char PcdRequest(unsigned char req_code, unsigned char *pTagType)
     unsigned char ucComMF522Buf[16];
 
     ClearBitMask(0x0C, 0x80);
-    // 【关键修正】发送位宽必须是7位
     Write_Raw_RC(0x0D, 0x07); 
     ClearBitMask(0x0E, 0x08);
     Write_Raw_RC(0x01, 0x00);
@@ -265,7 +264,6 @@ char PcdAnticoll(unsigned char *pSnr)
     unsigned char ucComMF522Buf[16];
 
     ClearBitMask(0x0C, 0x80);
-    // 【关键修正】发送位宽必须是0，清除对齐
     Write_Raw_RC(0x0D, 0x00); 
     ClearBitMask(0x0E, 0x08);
     ucComMF522Buf[0] = 0x93;
@@ -284,5 +282,120 @@ char PcdAnticoll(unsigned char *pSnr)
         }
     }
     SetBitMask(0x0C, 0x80);
+    return status;
+}
+
+// ================================================================
+// 以下是补充缺失的 CRC计算、选卡、验证密码、读写扇区核心函数
+// ================================================================
+
+// CRC 计算
+void CalulateCRC(unsigned char *pIndata, unsigned char len, unsigned char *pOutData)
+{
+    unsigned char i, n;
+    ClearBitMask(0x05, 0x04);
+    SetBitMask(0x0A, 0x80);
+    for (i = 0; i < len; i++)
+    {
+        Write_Raw_RC(0x09, *(pIndata+i));
+    }
+    Write_Raw_RC(0x01, PCD_CALCCRC);
+    i = 0xFF;
+    do
+    {
+        n = Read_Raw_RC(0x05);
+        i--;
+    } while ((i != 0) && !(n & 0x04));
+    pOutData[0] = Read_Raw_RC(0x22);
+    pOutData[1] = Read_Raw_RC(0x21);
+}
+
+// 选定卡片
+char PcdSelect(unsigned char *pSnr)
+{
+    char status;
+    unsigned char i;
+    unsigned int unLen;
+    unsigned char ucComMF522Buf[16];
+
+    ucComMF522Buf[0] = PICC_ANTICOLL1;
+    ucComMF522Buf[1] = 0x70;
+    ucComMF522Buf[6] = 0;
+    for (i = 0; i < 4; i++)
+    {
+        ucComMF522Buf[i+2] = *(pSnr+i);
+        ucComMF522Buf[6]  ^= *(pSnr+i);
+    }
+    CalulateCRC(ucComMF522Buf, 7, &ucComMF522Buf[7]);
+
+    ClearBitMask(0x0C, 0x80);
+    status = PcdComMF522(PCD_TRANSCEIVE, ucComMF522Buf, 9, ucComMF522Buf, &unLen);
+    if ((status == MI_OK) && (unLen == 0x18)) status = MI_OK;
+    else status = MI_ERR;
+    return status;
+}
+
+// 验证扇区密码
+char PcdAuthState(unsigned char auth_mode, unsigned char addr, unsigned char *pKey, unsigned char *pSnr)
+{
+    char status;
+    unsigned int unLen;
+    unsigned char i, ucComMF522Buf[16]; 
+
+    ucComMF522Buf[0] = auth_mode;
+    ucComMF522Buf[1] = addr;
+    for (i = 0; i < 6; i++) ucComMF522Buf[i+2] = *(pKey+i);
+    for (i = 0; i < 4; i++) ucComMF522Buf[i+8] = *(pSnr+i);
+    
+    status = PcdComMF522(PCD_AUTHENT, ucComMF522Buf, 12, ucComMF522Buf, &unLen);
+    if ((status != MI_OK) || (!(Read_Raw_RC(0x08) & 0x08))) status = MI_ERR;
+    
+    return status;
+}
+
+// 读卡片块数据
+char PcdRead(unsigned char addr, unsigned char *pData)
+{
+    char status;
+    unsigned int unLen;
+    unsigned char i, ucComMF522Buf[18];
+
+    ucComMF522Buf[0] = PICC_READ;
+    ucComMF522Buf[1] = addr;
+    CalulateCRC(ucComMF522Buf, 2, &ucComMF522Buf[2]);
+
+    status = PcdComMF522(PCD_TRANSCEIVE, ucComMF522Buf, 4, ucComMF522Buf, &unLen);
+    if ((status == MI_OK) && (unLen == 0x90)) // 读出 16字节数据 + 2字节CRC，共144比特(0x90)
+    {
+        for (i = 0; i < 16; i++) *(pData+i) = ucComMF522Buf[i];
+    }
+    else
+    {
+        status = MI_ERR;
+    }
+    return status;
+}
+
+// 写卡片块数据
+char PcdWrite(unsigned char addr, unsigned char *pData)
+{
+    char status;
+    unsigned int unLen;
+    unsigned char i, ucComMF522Buf[18];
+
+    ucComMF522Buf[0] = PICC_WRITE;
+    ucComMF522Buf[1] = addr;
+    CalulateCRC(ucComMF522Buf, 2, &ucComMF522Buf[2]);
+
+    status = PcdComMF522(PCD_TRANSCEIVE, ucComMF522Buf, 4, ucComMF522Buf, &unLen);
+    if ((status != MI_OK) || (unLen != 4) || ((ucComMF522Buf[0] & 0x0F) != 0x0A)) status = MI_ERR;
+    
+    if (status == MI_OK)
+    {
+        for (i = 0; i < 16; i++) ucComMF522Buf[i] = *(pData+i);
+        CalulateCRC(ucComMF522Buf, 16, &ucComMF522Buf[16]);
+        status = PcdComMF522(PCD_TRANSCEIVE, ucComMF522Buf, 18, ucComMF522Buf, &unLen);
+        if ((status != MI_OK) || (unLen != 4) || ((ucComMF522Buf[0] & 0x0F) != 0x0A)) status = MI_ERR;
+    }
     return status;
 }

@@ -1,0 +1,12 @@
+{% extends "portal_layout.html" %}
+
+{% block content %}
+<div class="card">
+    <p>去网吧刷未绑定的IC卡，机器蜂鸣并会显示一串6位随机码，输入此处进行绑定防盗刷。</p>
+</div>
+<form method="POST">
+    <div class="form-group"><label>6位限时绑定码 (刷卡机屏幕显示)</label><input type="text" name="code" required></div>
+    <div class="form-group"><label>你的身份证号 (务必与卡内写入信息一致)</label><input type="text" name="id_card" required></div>
+    <button type="submit">确认绑定</button>
+</form>
+{% endblock %}

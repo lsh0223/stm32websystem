@@ -4,6 +4,8 @@
 import logging
 import datetime
 import time
+import random
+import threading
 from typing import Dict, Optional
 import paho.mqtt.client as mqtt
 import pymysql
@@ -18,6 +20,7 @@ MQTT_PASS = ""
 TOPIC_STATE = "netbar/+/state"
 TOPIC_DEBUG = "netbar/+/debug"
 TOPIC_CARD  = "netbar/+/card"
+TOPIC_DOOR  = "netbar/+/door_card"
 TOPIC_ALERT = "netbar/+/alert"
 TOPIC_CMD   = "netbar/+/cmd" 
 
@@ -27,16 +30,12 @@ DB_USER = "root"
 DB_PASS = "123456"
 DB_NAME = "netbar"
 
-# 移除硬编码，改用动态获取
-# PRICE_PER_MIN  = 1.0 
 MIN_BALANCE    = 1.0
 SMOKE_ALARM_TH = 60
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, clean_session=True)
-
-# ========= DB 工具 =========
 
 def get_db_connection():
     return pymysql.connect(
@@ -45,19 +44,15 @@ def get_db_connection():
     )
 
 def get_current_price() -> float:
-    """从数据库读取当前费率"""
     conn = get_db_connection()
     price = 1.0
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT v FROM config WHERE k='price_per_min'")
             row = cur.fetchone()
-            if row:
-                price = float(row['v'])
-    except Exception as e:
-        logging.error(f"Error getting price: {e}")
-    finally:
-        conn.close()
+            if row: price = float(row['v'])
+    except Exception as e: logging.error(f"Error getting price: {e}")
+    finally: conn.close()
     return price
 
 def parse_kv_payload(payload: str) -> Dict[str, str]:
@@ -74,8 +69,6 @@ def calc_age_from_id(identity_num: str) -> Optional[int]:
         birth = identity_num[6:14] if len(identity_num) == 18 else "19" + identity_num[6:12]
         return datetime.date.today().year - int(birth[0:4])
     except: return None
-
-# ========= 业务辅助函数 =========
 
 def send_mqtt(device_id: str, subtopic: str, payload_str: str):
     topic = f"netbar/{device_id}/cmd" if subtopic in ("cmd", "card/resp") else f"netbar/{device_id}/{subtopic}"
@@ -99,15 +92,19 @@ def get_active_session(device_id: str) -> Optional[Dict]:
             return cur.fetchone()
     finally: conn.close()
 
-def create_session(device_id: str, card_uid: str, user_name: str):
+def create_session(device_id: str, card_uid: str, user_name: str, rate: float):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("INSERT INTO user_session_log (user_name, device_id, card_uid, start_time, end_time, duration_sec, fee) VALUES (%s, %s, %s, NOW(), NULL, 0, 0.00)", (user_name, device_id, card_uid))
     finally: conn.close()
 
-def close_session_if_exists(device_id: str, reason: str = "normal", duration_sec_hint: Optional[int] = None):
+def close_session_if_exists(device_id: str, reason: str = "normal"):
     session = get_active_session(device_id)
+    
+    base_price = get_current_price()
+    send_mqtt(device_id, "cmd", f"set_rate;val={base_price:.2f}")
+
     if not session: return
     now = datetime.datetime.now()
     
@@ -115,22 +112,33 @@ def close_session_if_exists(device_id: str, reason: str = "normal", duration_sec
     duration_sec = int(delta.total_seconds())
     if duration_sec < 0: duration_sec = 0
     
-    # ★★★ 修改：使用动态费率 ★★★
-    price = get_current_price()
-    fee = round(duration_sec / 60.0 * price, 2)
-    logging.info(f"SETTLE: Device={device_id}, RealSec={duration_sec}, Fee={fee}, Reason={reason}, Rate={price}")
-
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE card_uid=%s", (session["card_uid"],))
+            u = cur.fetchone()
+            
+            discount = 1.0
+            fee = 0.0
+            if u:
+                total_rech = float(u['total_recharge'])
+                if total_rech >= 1000: discount = 0.9
+                elif total_rech >= 500: discount = 0.93
+                elif total_rech >= 300: discount = 0.95
+                elif total_rech >= 100: discount = 0.98
+            
+                fee = round(duration_sec / 60.0 * (base_price * discount), 2)
+                
+                # ★★★ 修复安全漏洞：封顶扣费，防止超扣 ★★★
+                current_bal = float(u["balance"])
+                if fee > current_bal:
+                    fee = current_bal # 最多扣光现有余额
+            
             cur.execute("UPDATE user_session_log SET end_time=%s, duration_sec=%s, fee=%s, end_reason=%s WHERE id=%s", (now, duration_sec, fee, reason, session["id"]))
-            if session["card_uid"] and fee > 0:
-                cur.execute("SELECT id, balance FROM users WHERE card_uid=%s", (session["card_uid"],))
-                u = cur.fetchone()
-                if u:
-                    new_bal = max(0.0, float(u["balance"]) - fee)
-                    cur.execute("UPDATE users SET balance=%s WHERE id=%s", (new_bal, u["id"]))
-                    cur.execute("INSERT INTO consume_log (user_id, session_id, amount, created_at) VALUES (%s, %s, %s, NOW())", (u["id"], session["id"], fee))
+            if u and fee > 0:
+                new_bal = max(0.0, current_bal - fee)
+                cur.execute("UPDATE users SET balance=%s WHERE id=%s", (new_bal, u["id"]))
+                cur.execute("INSERT INTO consume_log (user_id, session_id, amount, created_at) VALUES (%s, %s, %s, NOW())", (u["id"], session["id"], fee))
             cur.execute("UPDATE devices SET current_status=0, current_user_id=NULL, last_update=NOW() WHERE device_id=%s", (device_id,))
     finally: conn.close()
 
@@ -150,9 +158,9 @@ def save_state_to_db(device_id: str, fields: Dict[str, str], raw_payload: str):
             prev_status = int(row["current_status"]) if row else 0
             
             status = 0
-            if iu == 1: status = 1      # 上机中
-            if sm >= SMOKE_ALARM_TH: status = 2  # 烟雾报警
-            if al == 1: status = 2      # 占座报警
+            if iu == 1: status = 1     
+            if sm >= SMOKE_ALARM_TH: status = 2  
+            if al == 1: status = 2      
 
             cur.execute("""INSERT INTO devices (device_id, seat_name, current_status, pc_status, light_status, human_status, smoke_percent, current_sec, current_fee, last_update) 
                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()) 
@@ -162,56 +170,48 @@ def save_state_to_db(device_id: str, fields: Dict[str, str], raw_payload: str):
             if status == 2 and sm >= SMOKE_ALARM_TH and prev_status != 2:
                 cur.execute("INSERT INTO alarm_log (device_id, alarm_type, message, created_at) VALUES (%s, %s, %s, NOW())", 
                             (device_id, "SMOKE", f"烟雾浓度过高: {sm}%"))
-
     finally: conn.close()
-    
+
     session = get_active_session(device_id)
-    if session:
-        now = datetime.datetime.now()
-        server_sec = int((now - session["start_time"]).total_seconds())
-        if abs(server_sec - sec) > 5 or sec == 0:
-            logging.warning(f"SYNC NEEDED: Dev={device_id}, Client={sec}, Server={server_sec}")
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT username, balance FROM users WHERE card_uid=%s", (session["card_uid"],))
-                    u = cur.fetchone()
-                    if u:
-                        cmd = f"card_ok;uid={session['card_uid']};name={u['username']};balance={float(u['balance']):.2f};sec={server_sec}"
-                        send_mqtt(device_id, "cmd", cmd)
-            finally: conn.close()
-            
+    if session and iu == 1:
         conn = get_db_connection()
         force_checkout = False
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT balance FROM users WHERE card_uid=%s", (session["card_uid"],))
+                cur.execute("SELECT balance, total_recharge FROM users WHERE card_uid=%s", (session["card_uid"],))
                 u = cur.fetchone()
                 if u:
                     current_balance = float(u["balance"])
-                    # ★★★ 修改：使用动态费率计算 ★★★
-                    price = get_current_price()
-                    current_fee = (sec / 60.0) * price
+                    total_rech = float(u['total_recharge'])
                     
-                    if current_fee >= current_balance and current_balance >= 0:
-                        logging.warning(f"BALANCE LIMIT: Dev={device_id}, Fee={current_fee:.2f}, Bal={current_balance}, Rate={price}. Force Checkout.")
+                    discount = 1.0
+                    if total_rech >= 1000: discount = 0.9
+                    elif total_rech >= 500: discount = 0.93
+                    elif total_rech >= 300: discount = 0.95
+                    elif total_rech >= 100: discount = 0.98
+                    
+                    base_price = get_current_price()
+                    actual_price = round(base_price * discount, 2)
+                    
+                    current_fee = (sec / 60.0) * actual_price
+                    
+                    if current_fee >= current_balance:
                         force_checkout = True
         finally: conn.close()
-        
-        if force_checkout:
-            send_mqtt(device_id, "cmd", "checkout;code=no_bal;msg=余额耗尽已下机")
-            close_session_if_exists(device_id, reason="balance_empty")
-            
-    else:
-        if iu == 1:
-            logging.warning(f"ZOMBIE DETECTED: Device {device_id} reports usage but no session found. Sending reset.")
-            send_mqtt(device_id, "cmd", "checkout;code=sync;msg=状态同步复位")
 
+        if force_checkout:
+            send_mqtt(device_id, "cmd", "checkout")
+            time.sleep(0.5)
+            send_mqtt(device_id, "cmd", "msg:余额耗尽，系统自动结账下机")
+            close_session_if_exists(device_id, reason="balance_empty")
+
+
+# 座位刷卡逻辑
 def handle_card_swipe(device_id: str, payload: str):
     kv = parse_kv_payload(payload)
     card_uid = (kv.get("uid") or "").strip().upper()
+    id_card = (kv.get("id") or "").strip()
     if not card_uid: return
-    logging.info("handle_card_swipe: device=%s card=%s", device_id, card_uid)
 
     active = get_active_session(device_id)
     conn = get_db_connection()
@@ -219,19 +219,13 @@ def handle_card_swipe(device_id: str, payload: str):
         with conn.cursor() as cur:
             cur.execute("SELECT current_status, is_maintenance FROM devices WHERE device_id=%s", (device_id,))
             dev = cur.fetchone()
-            curr_status = int(dev["current_status"]) if dev else 0
-            
             if dev and dev.get("is_maintenance"):
                 send_mqtt(device_id, "cmd", "card_err;code=maint;msg=维护中禁止上机")
                 return
 
             if active:
                 if active.get("card_uid") == card_uid:
-                    now = datetime.datetime.now()
-                    server_sec = int((now - active["start_time"]).total_seconds())
-                    cur.execute("SELECT * FROM users WHERE card_uid=%s", (card_uid,))
-                    u = cur.fetchone()
-                    if u: send_mqtt(device_id, "cmd", f"card_ok;uid={card_uid};name={u['username']};balance={float(u['balance']):.2f};sec={server_sec}")
+                    send_mqtt(device_id, "cmd", f"card_ok;uid={card_uid};name={active['user_name']};balance=0;sec=0")
                     return
                 else:
                     send_mqtt(device_id, "cmd", "card_err;code=busy;msg=设备繁忙")
@@ -239,45 +233,90 @@ def handle_card_swipe(device_id: str, payload: str):
 
             cur.execute("SELECT * FROM users WHERE card_uid=%s", (card_uid,))
             user = cur.fetchone()
-            if not user: send_mqtt(device_id, "cmd", "card_err;code=invalid;msg=无效卡")
-            elif not user["is_active"]: send_mqtt(device_id, "cmd", "card_err;code=disabled;msg=账户禁用")
+            if not user:
+                cur.execute("DELETE FROM binding_codes WHERE card_uid=%s", (card_uid,))
+                cur.execute("DELETE FROM binding_codes WHERE created_at < DATE_SUB(NOW(), INTERVAL 1 DAY)")
+                
+                code = str(random.randint(100000, 999999))
+                cur.execute("INSERT INTO binding_codes (code, card_uid, id_card) VALUES (%s, %s, %s)", (code, card_uid, id_card))
+                send_mqtt(device_id, "cmd", "card_err;code=unbound;msg=验证失败")
+                time.sleep(0.5)
+                send_mqtt(device_id, "cmd", f"msg:未绑定! 绑定码:{code} 请在网站绑定")
+                return
+
+            if not user["is_active"]:
+                send_mqtt(device_id, "cmd", "card_err;code=disabled;msg=账户禁用")
+                return
+
+            age = calc_age_from_id(user["id_card"]) or 0
+            if age < 18: 
+                send_mqtt(device_id, "cmd", "card_err;code=underage;msg=未成年人禁止")
+            elif float(user["balance"]) < MIN_BALANCE: 
+                send_mqtt(device_id, "cmd", "card_err;code=low_bal;msg=余额不足")
             else:
-                age = calc_age_from_id(user["id_card"]) or 0
-                if age < 18: send_mqtt(device_id, "cmd", "card_err;code=underage;msg=未成年人禁止")
-                elif float(user["balance"]) < MIN_BALANCE: send_mqtt(device_id, "cmd", "card_err;code=low_bal;msg=余额不足")
-                else:
-                    create_session(device_id, card_uid, user["username"])
-                    cur.execute("UPDATE devices SET current_status=1, current_user_id=%s, last_update=NOW() WHERE device_id=%s", (user["id"], device_id))
-                    # ★★★ 新增：首次上机时，可以顺便发送 set_rate (可选)，或者设备默认费率已同步
-                    send_mqtt(device_id, "cmd", f"card_ok;uid={card_uid};name={user['username']};balance={float(user['balance']):.2f};sec=0")
+                total_rech = float(user['total_recharge'])
+                discount = 1.0
+                level_name = "普通"
+                if total_rech >= 1000:
+                    discount = 0.9; level_name = "钻石"
+                elif total_rech >= 500:
+                    discount = 0.93; level_name = "黄金"
+                elif total_rech >= 300:
+                    discount = 0.95; level_name = "白银"
+                elif total_rech >= 100:
+                    discount = 0.98; level_name = "青铜"
+
+                base_price = get_current_price()
+                actual_price = round(base_price * discount, 2)
+
+                send_mqtt(device_id, "cmd", f"set_rate;val={actual_price:.2f}")
+                create_session(device_id, card_uid, user["username"], actual_price)
+                cur.execute("UPDATE devices SET current_status=1, current_user_id=%s, last_update=NOW() WHERE device_id=%s", (user["id"], device_id))
+                
+                send_mqtt(device_id, "cmd", f"card_ok;uid={card_uid};name={user['username']};balance={float(user['balance']):.2f};sec=0")
+                time.sleep(0.5)
+                send_mqtt(device_id, "cmd", f"msg:{level_name}会员,专享费率{actual_price:.2f}元/分")
     finally: conn.close()
 
-def handle_debug(device_id: str, payload: str):
-    if "sync" in payload:
-        # 设备重连时，如果正在使用，也顺便同步一下当前费率 (可选优化)
-        # 这里只保留原有恢复会话逻辑
-        session = get_active_session(device_id)
-        if session:
-            now = datetime.datetime.now()
-            server_sec = int((now - session["start_time"]).total_seconds())
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT username, balance FROM users WHERE card_uid=%s", (session["card_uid"],))
-                    u = cur.fetchone()
-                    if u:
-                        cmd = f"card_ok;uid={session['card_uid']};name={u['username']};balance={float(u['balance']):.2f};sec={server_sec}"
-                        send_mqtt(device_id, "cmd", cmd)
-            finally: conn.close()
-    
-    save_debug_to_db(device_id, payload)
+def door_open_task(device_id, username, level):
+    send_mqtt(device_id, "cmd", "light_on")
+    send_mqtt(device_id, "cmd", f"msg:门禁已开 {level}会员:{username} 欢迎光临")
+    time.sleep(3)
+    send_mqtt(device_id, "cmd", "light_off")
 
-def save_debug_to_db(device_id: str, payload: str):
+# 门禁刷卡逻辑
+def handle_door_card(device_id: str, payload: str):
+    kv = parse_kv_payload(payload)
+    card_uid = (kv.get("uid") or "").strip().upper()
+    id_card = (kv.get("id") or "").strip()
+    
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO device_state_log (device_id, state_text, created_at) VALUES (%s, %s, NOW())", (device_id, payload))
+            cur.execute("SELECT * FROM users WHERE card_uid=%s", (card_uid,))
+            user = cur.fetchone()
+
+            if not user:
+                cur.execute("DELETE FROM binding_codes WHERE card_uid=%s", (card_uid,))
+                code = str(random.randint(100000, 999999))
+                cur.execute("INSERT INTO binding_codes (code, card_uid, id_card) VALUES (%s, %s, %s)", (code, card_uid, id_card))
+                send_mqtt(device_id, "cmd", f"msg:未绑定! 绑定码:{code} 请在网站绑定")
+            elif not user["is_active"]:
+                send_mqtt(device_id, "cmd", "msg:账户禁用")
+            else:
+                total_rech = float(user['total_recharge'])
+                level_name = "普通"
+                if total_rech >= 1000: level_name = "钻石"
+                elif total_rech >= 500: level_name = "黄金"
+                elif total_rech >= 300: level_name = "白银"
+                elif total_rech >= 100: level_name = "青铜"
+
+                t = threading.Thread(target=door_open_task, args=(device_id, user['username'], level_name))
+                t.start()
     finally: conn.close()
+
+def handle_debug(device_id: str, payload: str):
+    pass
 
 def handle_cmd_from_device(device_id: str, payload: str):
     if "checkout" in payload:
@@ -294,7 +333,7 @@ def handle_alert(device_id: str, payload: str):
 
 def on_connect(client, userdata, flags, rc):
     logging.info("MQTT connected rc=%s", rc)
-    if rc == 0: client.subscribe([(TOPIC_STATE, 0), (TOPIC_DEBUG, 0), (TOPIC_CARD, 0), (TOPIC_ALERT, 0), (TOPIC_CMD, 0)])
+    if rc == 0: client.subscribe([(TOPIC_STATE, 0), (TOPIC_DEBUG, 0), (TOPIC_CARD, 0), (TOPIC_DOOR, 0), (TOPIC_ALERT, 0), (TOPIC_CMD, 0)])
 
 def on_message(client, userdata, msg):
     try:
@@ -306,6 +345,7 @@ def on_message(client, userdata, msg):
             if kind == "state": save_state_to_db(did, parse_kv_payload(payload), payload)
             elif kind == "debug": handle_debug(did, payload)
             elif kind == "card": handle_card_swipe(did, payload)
+            elif kind == "door_card": handle_door_card(did, payload)
             elif kind == "alert": handle_alert(did, payload)
             elif kind == "cmd": handle_cmd_from_device(did, payload)
     except Exception as e: logging.exception("Handle error: %s", e)

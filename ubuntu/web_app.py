@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from flask import Flask, render_template, redirect, url_for, request, jsonify, flash
+from flask import Flask, render_template, redirect, url_for, request, jsonify, flash, session
 import pymysql
 import paho.mqtt.client as mqtt
 from datetime import datetime
 import time
 import threading
-# 登录认证相关库
+import random  # 新增：用于生成验证码
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -30,12 +30,8 @@ DB_NAME = "netbar"
 OFFLINE_SECS = 8 
 
 app = Flask(__name__) 
-# 必须设置密钥用于Session加密
 app.secret_key = 'super_secret_key_for_netbar_system_lsh0223'
 
-# ==========================================
-#  Flask-Login 初始化配置
-# ==========================================
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
@@ -59,53 +55,23 @@ def load_user(user_id):
             if row:
                 user = AdminUser(row['id'], row['username'], row['password_hash'])
     except Exception as e:
-        print(f"User Loader Error: {e}")
+        pass
     finally:
         conn.close()
     return user
 
-# ==========================================
-#  数据库连接助手
-# ==========================================
 def get_db_connection():
     return pymysql.connect(
         host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, database=DB_NAME,
         charset="utf8mb4", autocommit=True, cursorclass=pymysql.cursors.DictCursor
     )
 
-def init_db_admin():
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS admins (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    username VARCHAR(50) UNIQUE NOT NULL,
-                    password_hash VARCHAR(255) NOT NULL,
-                    last_login DATETIME
-                )
-            """)
-            cur.execute("SELECT COUNT(*) as cnt FROM admins")
-            res = cur.fetchone()
-            if res['cnt'] == 0:
-                default_pass = generate_password_hash("admin123")
-                cur.execute("INSERT INTO admins (username, password_hash) VALUES (%s, %s)", 
-                            ('admin', default_pass))
-                print("★ 系统初始化：已创建默认管理员账号 admin / admin123")
-    finally:
-        conn.close()
-
-# ==========================================
-#  MQTT 发送助手
-# ==========================================
 def send_mqtt_cmd(device_id, action, msg_text=""):
     try:
         client = mqtt.Client(client_id=f"web_cmd_{int(time.time())}_{device_id}")
         if MQTT_USER: client.username_pw_set(MQTT_USER, MQTT_PASS)
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        
         topic = f"netbar/{device_id}/cmd"
-        
         if action == "msg":
             try:
                 payload = b"msg:" + msg_text.encode("gbk", errors="ignore")
@@ -114,99 +80,252 @@ def send_mqtt_cmd(device_id, action, msg_text=""):
                 client.publish(topic, f"msg:{msg_text}", qos=0)
         else:
             client.publish(topic, action, qos=0)
-            
         client.disconnect()
     except Exception as e:
         print(f"MQTT Send Error: {e}")
 
 # ==========================================
-#  后台 MQTT 监听线程
+#  用户门户路由
 # ==========================================
-def on_mqtt_message(client, userdata, msg):
-    try:
-        topic = msg.topic
-        payload = msg.payload.decode('utf-8', errors='ignore')
-        parts = topic.split('/')
+
+@app.route("/portal")
+def portal_index():
+    if 'user_id' in session: return redirect(url_for('portal_dashboard'))
+    return redirect(url_for('portal_login'))
+
+@app.route("/portal/register", methods=["GET", "POST"])
+def portal_register():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+        question = request.form.get("question", "").strip()
+        answer = request.form.get("answer", "").strip()
+        user_captcha = request.form.get("captcha", "").strip()
+
+        # 校验验证码
+        if 'captcha' not in session or user_captcha != session['captcha']:
+            flash("验证码计算错误，请重试", "danger")
+            return redirect(url_for('portal_register'))
+
+        if not username or not password or not question or not answer:
+            flash("所有字段不能为空", "danger")
+            return redirect(url_for('portal_register'))
         
-        if len(parts) == 3 and parts[2] == 'alert':
-            device_id = parts[1]
-            alert_content = payload
-            alert_type_code = "UNKNOWN"
-            if "smoke" in alert_content or "fire" in alert_content:
-                alert_type_code = "SMOKE" 
-            elif "occupy" in alert_content:
-                alert_type_code = "OCCUPY"
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM users WHERE username=%s", (username,))
+                if cur.fetchone():
+                    flash("用户名已被注册", "danger")
+                else:
+                    pwd_hash = generate_password_hash(password)
+                    cur.execute("INSERT INTO users (username, password_hash, security_question, security_answer, is_active) VALUES (%s, %s, %s, %s, 1)", 
+                                (username, pwd_hash, question, answer))
+                    flash("注册成功，请妥善保管您的密保答案！", "success")
+                    session.pop('captcha', None)
+                    return redirect(url_for('portal_login'))
+        finally: conn.close()
+
+    # GET 请求时生成简单的数学算术验证码
+    num1 = random.randint(1, 10)
+    num2 = random.randint(1, 10)
+    session['captcha'] = str(num1 + num2)
+    captcha_text = f"{num1} + {num2} = ?"
+    return render_template("portal_register.html", captcha_text=captcha_text)
+
+@app.route("/portal/login", methods=["GET", "POST"])
+def portal_login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM users WHERE username=%s", (username,))
+                user = cur.fetchone()
+                if user and user['password_hash'] and check_password_hash(user['password_hash'], password):
+                    if user['is_active'] == 0:
+                        flash("账户已被禁用", "danger")
+                    else:
+                        session['user_id'] = user['id']
+                        session['username'] = user['username']
+                        flash("登录成功", "success")
+                        return redirect(url_for('portal_dashboard'))
+                else:
+                    flash("用户名或密码错误", "danger")
+        finally: conn.close()
+    return render_template("portal_login.html")
+
+@app.route("/portal/forgot_password", methods=["GET", "POST"])
+def portal_forgot_password():
+    step = request.form.get("step", "1")
+    
+    if request.method == "POST":
+        # 步骤 1：输入用户名，查询是否存在密保问题
+        if step == "1":
+            username = request.form.get("username", "").strip()
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT security_question FROM users WHERE username=%s", (username,))
+                    user = cur.fetchone()
+                    if user and user['security_question']:
+                        return render_template("portal_forgot_password.html", step="2", username=username, question=user['security_question'])
+                    else:
+                        flash("该用户不存在或未设置密保问题", "danger")
+            finally: conn.close()
+            
+        # 步骤 2：校验密保答案并重置密码
+        elif step == "2":
+            username = request.form.get("username", "").strip()
+            answer = request.form.get("answer", "").strip()
+            new_password = request.form.get("new_password", "").strip()
+            question_hidden = request.form.get("question_hidden", "")
             
             conn = get_db_connection()
-            with conn.cursor() as cur:
-                cur.execute("INSERT INTO alarm_log (device_id, alarm_type, message, is_resolved, created_at) VALUES (%s, %s, %s, 0, NOW())", 
-                            (device_id, alert_type_code, alert_content))
-                cur.execute("UPDATE devices SET current_status=2, last_update=NOW() WHERE device_id=%s", (device_id,))
-            conn.close()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT security_answer FROM users WHERE username=%s", (username,))
+                    user = cur.fetchone()
+                    if user and user['security_answer'] == answer:
+                        pwd_hash = generate_password_hash(new_password)
+                        cur.execute("UPDATE users SET password_hash=%s WHERE username=%s", (pwd_hash, username))
+                        flash("密码重置成功，请使用新密码登录", "success")
+                        return redirect(url_for('portal_login'))
+                    else:
+                        flash("密保答案错误！", "danger")
+                        return render_template("portal_forgot_password.html", step="2", username=username, question=question_hidden)
+            finally: conn.close()
 
-        elif len(parts) == 3 and parts[2] == 'state':
-            device_id = parts[1]
-            conn = get_db_connection()
-            with conn.cursor() as cur:
-                cur.execute("UPDATE devices SET last_update=NOW() WHERE device_id=%s", (device_id,))
-            conn.close()
+    # 默认渲染第一步验证用户名
+    return render_template("portal_forgot_password.html", step="1")
 
-    except Exception as e:
-        print(f"MQTT Listener Error: {e}")
+@app.route("/portal/logout")
+def portal_logout():
+    session.pop('user_id', None)
+    session.pop('username', None)
+    flash("已安全退出", "success")
+    return redirect(url_for('portal_login'))
 
-def start_mqtt_listener():
-    def run_loop():
-        client = mqtt.Client(client_id=MQTT_LISTENER_ID)
-        if MQTT_USER: client.username_pw_set(MQTT_USER, MQTT_PASS)
+@app.route("/portal/dashboard")
+def portal_dashboard():
+    if 'user_id' not in session: return redirect(url_for('portal_login'))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE id=%s", (session['user_id'],))
+            user = cur.fetchone()
+            
+            if not user:
+                session.pop('user_id', None)
+                session.pop('username', None)
+                flash("账号登录状态已失效或被删除，请重新登录", "danger")
+                return redirect(url_for('portal_login'))
+
+            total_rech = float(user['total_recharge'])
+            level = "普通会员"
+            discount = 1.0
+            if total_rech >= 1000: level = "钻石会员"; discount = 0.9
+            elif total_rech >= 500: level = "黄金会员"; discount = 0.93
+            elif total_rech >= 300: level = "白银会员"; discount = 0.95
+            elif total_rech >= 100: level = "青铜会员"; discount = 0.98
+
+    finally: conn.close()
+    return render_template("portal_dashboard.html", user=user, level=level, discount=discount)
+
+@app.route("/portal/bind", methods=["GET", "POST"])
+def portal_bind():
+    if 'user_id' not in session: return redirect(url_for('portal_login'))
+    if request.method == "POST":
+        code = request.form.get("code", "").strip()
+        id_card = request.form.get("id_card", "").strip()
+        conn = get_db_connection()
         try:
-            client.connect(MQTT_BROKER, MQTT_PORT, 60)
-            client.subscribe("netbar/+/alert") 
-            client.subscribe("netbar/+/state")
-            client.on_message = on_mqtt_message
-            print("🚀 后台 MQTT 监听线程已启动...")
-            client.loop_forever()
-        except Exception as e:
-            print(f"❌ MQTT 监听启动失败 ({e}), 5秒后重试...")
-            time.sleep(5) 
-            run_loop()
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM binding_codes WHERE code=%s AND id_card=%s ORDER BY id DESC LIMIT 1", (code, id_card))
+                record = cur.fetchone()
+                if record:
+                    cur.execute("SELECT id FROM users WHERE card_uid=%s", (record['card_uid'],))
+                    conflict = cur.fetchone()
+                    if conflict and conflict['id'] != session['user_id']:
+                        flash("该卡片已被其他账号绑定！", "danger")
+                    else:
+                        birthdate = "2000-01-01"
+                        if len(id_card) == 18:
+                            birthdate = f"{id_card[6:10]}-{id_card[10:12]}-{id_card[12:14]}"
+                        cur.execute("UPDATE users SET card_uid=%s, id_card=%s, birthdate=%s WHERE id=%s", 
+                                    (record['card_uid'], id_card, birthdate, session['user_id']))
+                        cur.execute("DELETE FROM binding_codes WHERE code=%s", (code,))
+                        flash("卡片及身份信息绑定成功！去网吧刷卡即可直接上机或开门。", "success")
+                        return redirect(url_for('portal_dashboard'))
+                else:
+                    flash("绑定码错误或与身份证不匹配！", "danger")
+        finally: conn.close()
+    return render_template("portal_bind.html")
 
-    t = threading.Thread(target=run_loop, daemon=True)
-    t.start()
+@app.route("/portal/recharge", methods=["GET", "POST"])
+def portal_recharge():
+    if 'user_id' not in session: return redirect(url_for('portal_login'))
+    if request.method == "POST":
+        amount = float(request.form.get("amount", 0))
+        if amount > 0:
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE users SET balance=balance+%s, total_recharge=total_recharge+%s WHERE id=%s", (amount, amount, session['user_id']))
+                    cur.execute("SELECT balance FROM users WHERE id=%s", (session['user_id'],))
+                    new_bal = cur.fetchone()['balance']
+                    cur.execute("INSERT INTO recharge_log (user_id, amount, balance_after, remark, created_at) VALUES (%s, %s, %s, '用户自助充值', NOW())", 
+                                (session['user_id'], amount, new_bal))
+                flash(f"成功充值 {amount} 元，累计充值可升级会员！", "success")
+            finally: conn.close()
+    return render_template("portal_recharge.html")
+
+@app.route("/portal/history")
+def portal_history():
+    if 'user_id' not in session: return redirect(url_for('portal_login'))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            sql = """
+                SELECT c.amount, c.created_at, s.start_time, s.end_time, s.device_id, s.duration_sec
+                FROM consume_log c
+                LEFT JOIN user_session_log s ON c.session_id = s.id
+                WHERE c.user_id=%s
+                ORDER BY c.created_at DESC LIMIT 20
+            """
+            cur.execute(sql, (session['user_id'],))
+            consumes = cur.fetchall()
+            
+            cur.execute("SELECT * FROM recharge_log WHERE user_id=%s ORDER BY created_at DESC LIMIT 20", (session['user_id'],))
+            recharges = cur.fetchall()
+    finally: conn.close()
+    return render_template("portal_history.html", consumes=consumes, recharges=recharges)
+
 
 # ==========================================
-#  登录路由与逻辑
+#  后台管理员页面及API保持原有完整功能
 # ==========================================
-
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if current_user.is_authenticated:
-        return redirect(url_for('index'))
-
+    if current_user.is_authenticated: return redirect(url_for('index'))
     if request.method == "POST":
         username = request.form.get("username")
         password = request.form.get("password")
-        
         conn = get_db_connection()
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM admins WHERE username=%s", (username,))
                 admin_data = cur.fetchone()
-                
             if admin_data and check_password_hash(admin_data['password_hash'], password):
                 user = AdminUser(admin_data['id'], admin_data['username'], admin_data['password_hash'])
                 login_user(user)
-                flash('登录成功，欢迎回来！', 'success')
-                
                 with conn.cursor() as cur:
                     cur.execute("UPDATE admins SET last_login=NOW() WHERE id=%s", (admin_data['id'],))
-                
-                next_page = request.args.get('next')
-                return redirect(next_page or url_for('index'))
+                return redirect(url_for('index'))
             else:
                 flash('用户名或密码错误', 'danger')
-        finally:
-            conn.close()
-            
+        finally: conn.close()
     return render_template("login.html")
 
 @app.route("/logout")
@@ -215,10 +334,6 @@ def logout():
     logout_user()
     flash('您已安全退出系统', 'info')
     return redirect(url_for('login'))
-
-# ==========================================
-#  受保护的 Web 页面路由
-# ==========================================
 
 @app.route("/")
 @login_required
@@ -301,8 +416,8 @@ def users_recharge(user_id):
             amount = float(request.form.get("amount", "0") or 0)
             with conn.cursor() as cur:
                 new_bal = float(user["balance"]) + amount
-                cur.execute("UPDATE users SET balance=%s WHERE id=%s", (new_bal, user_id))
-                cur.execute("INSERT INTO recharge_log (user_id, amount, balance_after, created_at) VALUES (%s, %s, %s, NOW())", 
+                cur.execute("UPDATE users SET balance=%s, total_recharge=total_recharge+%s WHERE id=%s", (new_bal, amount, user_id))
+                cur.execute("INSERT INTO recharge_log (user_id, amount, balance_after, remark, created_at) VALUES (%s, %s, %s, '管理员充值', NOW())", 
                             (user_id, amount, new_bal))
             return redirect(url_for("users_list"))
         return render_template("users_recharge.html", user=user, admin_name=current_user.username)
@@ -314,8 +429,7 @@ def users_recharge(user_id):
 def users_delete(user_id):
     conn = get_db_connection()
     try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM users WHERE id=%s", (user_id,))
+        with conn.cursor() as cur: cur.execute("DELETE FROM users WHERE id=%s", (user_id,))
     finally: conn.close()
     return redirect(url_for("users_list"))
 
@@ -328,16 +442,12 @@ def users_detail(user_id):
             cur.execute("SELECT * FROM users WHERE id=%s", (user_id,))
             user = cur.fetchone()
             if not user: return "用户不存在", 404
-            
             cur.execute("SELECT * FROM user_session_log WHERE user_name=%s ORDER BY start_time DESC LIMIT 50", (user['username'],))
             sessions = cur.fetchall()
-            
             cur.execute("SELECT * FROM recharge_log WHERE user_id=%s ORDER BY created_at DESC LIMIT 50", (user_id,))
             recharges = cur.fetchall()
-            
             cur.execute("SELECT * FROM consume_log WHERE user_id=%s ORDER BY created_at DESC LIMIT 50", (user_id,))
             consumes = cur.fetchall()
-            
         return render_template("users_detail.html", user=user, sessions=sessions, recharges=recharges, consumes=consumes, admin_name=current_user.username)
     finally: conn.close()
 
@@ -382,23 +492,18 @@ def broadcast():
                     cur.execute("SELECT device_id FROM devices")
                     rows = cur.fetchall()
                     target_list = [r['device_id'] for r in rows]
-                elif target_device:
-                    target_list = [target_device]
-            for did in target_list:
-                send_mqtt_cmd(did, "msg", message)
+                elif target_device: target_list = [target_device]
+            for did in target_list: send_mqtt_cmd(did, "msg", message)
             return redirect(url_for("broadcast"))
         else:
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM broadcast_log ORDER BY created_at DESC LIMIT 50")
                 logs = cur.fetchall()
-                cur.execute("SELECT device_id FROM devices ORDER BY device_id ASC")
+                # ★ 修复1：同时查询 device_id 和 seat_name
+                cur.execute("SELECT device_id, seat_name FROM devices ORDER BY device_id ASC") 
                 devices = cur.fetchall()
             return render_template("broadcast.html", logs=logs, devices=devices, admin_name=current_user.username)
     finally: conn.close()
-
-# ==========================================
-#  API 接口功能区
-# ==========================================
 
 @app.route('/get_rate', methods=['GET'])
 @login_required
@@ -425,9 +530,8 @@ def update_rate():
             cur.execute("SELECT device_id FROM devices")
             devices = cur.fetchall()
         cmd_str = f"set_rate;val={float_price:.2f}"
-        for dev in devices:
-            send_mqtt_cmd(dev['device_id'], cmd_str)
-        return jsonify({"status": "success", "message": "费率已更新"})
+        for dev in devices: send_mqtt_cmd(dev['device_id'], cmd_str)
+        return jsonify({"status": "success", "message": "基础费率已更新 (会员刷卡会以此动态打折)"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
     finally: conn.close()
@@ -478,56 +582,56 @@ def api_cmd():
     if not did or not cmd: return jsonify({"status": "error", "message": "参数缺失"}), 400
     conn = get_db_connection()
     try:
-        # 处理维护模式开关
         if cmd == "maint_on":
             with conn.cursor() as cur: cur.execute("UPDATE devices SET is_maintenance=1, current_status=0 WHERE device_id=%s", (did,))
         elif cmd == "maint_off":
             with conn.cursor() as cur: cur.execute("UPDATE devices SET is_maintenance=0 WHERE device_id=%s", (did,))
-        
-        # === 修复核心：下机结算逻辑 ===
         if cmd == "checkout":
              with conn.cursor() as cur:
-                 # 1. 获取设备当前关联的用户ID (关键步骤)
                  cur.execute("SELECT current_user_id FROM devices WHERE device_id=%s", (did,))
                  dev_row = cur.fetchone()
                  user_id = dev_row['current_user_id'] if dev_row else None
 
-                 # 2. 查找该设备当前未结束的会话
                  cur.execute("SELECT id, start_time FROM user_session_log WHERE device_id=%s AND end_time IS NULL ORDER BY id DESC LIMIT 1", (did,))
-                 session = cur.fetchone()
+                 session_log = cur.fetchone()
                  
-                 if session:
-                     start_time = session['start_time']
+                 if session_log:
+                     start_time = session_log['start_time']
                      if isinstance(start_time, str): start_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
                      now = datetime.now()
-                     
-                     # 计算时长和费用
                      duration_sec = int((now - start_time).total_seconds())
+                     
                      cur.execute("SELECT v FROM config WHERE k='price_per_min'")
                      row = cur.fetchone()
                      rate = float(row['v']) if row else 1.0
-                     fee = round((duration_sec / 60.0) * rate, 2)
-                     
-                     # 3. 更新会话日志 (记录费用)
-                     cur.execute("UPDATE user_session_log SET end_time=%s, duration_sec=%s, fee=%s, end_reason='admin_stop' WHERE id=%s", (now, duration_sec, fee, session['id']))
-                     
-                     # 4. [新增] 扣除用户余额并记录消费日志 (之前缺失的部分)
-                     if user_id and fee > 0:
-                         # 扣余额
-                         cur.execute("UPDATE users SET balance = balance - %s WHERE id=%s", (fee, user_id))
-                         # 插入消费流水
-                         cur.execute("INSERT INTO consume_log (user_id, session_id, amount, created_at) VALUES (%s, %s, %s, NOW())", 
-                                     (user_id, session['id'], fee))
 
-                 # 5. 最后重置设备状态
+                     fee = 0.0
+                     if user_id:
+                         cur.execute("SELECT balance, total_recharge FROM users WHERE id=%s", (user_id,))
+                         u_data = cur.fetchone()
+                         if u_data:
+                             total_rech = float(u_data['total_recharge'])
+                             current_bal = float(u_data['balance'])
+                             if total_rech >= 1000: rate *= 0.9
+                             elif total_rech >= 500: rate *= 0.93
+                             elif total_rech >= 300: rate *= 0.95
+                             elif total_rech >= 100: rate *= 0.98
+
+                             fee = round((duration_sec / 60.0) * rate, 2)
+                             
+                             if fee > current_bal:
+                                 fee = current_bal
+
+                     cur.execute("UPDATE user_session_log SET end_time=%s, duration_sec=%s, fee=%s, end_reason='admin_stop' WHERE id=%s", (now, duration_sec, fee, session_log['id']))
+                     if user_id and fee > 0:
+                         cur.execute("UPDATE users SET balance = balance - %s WHERE id=%s", (fee, user_id))
+                         cur.execute("INSERT INTO consume_log (user_id, session_id, amount, created_at) VALUES (%s, %s, %s, NOW())", (user_id, session_log['id'], fee))
+
                  cur.execute("UPDATE devices SET current_status=0, current_user_id=NULL, current_sec=0, current_fee=0 WHERE device_id=%s", (did,))
         
-        # 发送 MQTT 命令给硬件
         send_mqtt_cmd(did, cmd, val)
         return jsonify({"status": "ok"})
-    except Exception as e:
-        print(f"Error in api_cmd: {e}") # 打印错误日志方便调试
-        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
     finally: conn.close()
 
 @app.route("/api/device/rename", methods=["POST"])
@@ -539,6 +643,8 @@ def api_rename_device():
     conn = get_db_connection()
     try:
         with conn.cursor() as cur: cur.execute("UPDATE devices SET seat_name=%s WHERE device_id=%s", (new_name, did))
+        # 发送一条带有特殊前缀的消息给单片机
+        send_mqtt_cmd(did, "msg", f"SYS_RENAME:{new_name}")
         return jsonify({"status": "ok"})
     except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
     finally: conn.close()
@@ -560,21 +666,12 @@ def api_report_revenue():
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            if mode == 'weekly':
-                sql = """SELECT DATE_FORMAT(start_time, '%Y第%u周') as d, SUM(fee) as total_fee, COUNT(*) as cnt 
-                         FROM user_session_log WHERE start_time >= DATE_SUB(CURDATE(), INTERVAL 12 WEEK) GROUP BY d ORDER BY d"""
-            elif mode == 'monthly':
-                sql = """SELECT DATE_FORMAT(start_time, '%Y-%m') as d, SUM(fee) as total_fee, COUNT(*) as cnt 
-                         FROM user_session_log WHERE start_time >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) GROUP BY d ORDER BY d"""
-            else:
-                sql = """SELECT DATE(start_time) as d, SUM(fee) as total_fee, COUNT(*) as cnt 
-                         FROM user_session_log WHERE start_time >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY d ORDER BY d"""
+            if mode == 'weekly': sql = "SELECT DATE_FORMAT(start_time, '%Y第%u周') as d, SUM(fee) as total_fee, COUNT(*) as cnt FROM user_session_log WHERE start_time >= DATE_SUB(CURDATE(), INTERVAL 12 WEEK) GROUP BY d ORDER BY d"
+            elif mode == 'monthly': sql = "SELECT DATE_FORMAT(start_time, '%Y-%m') as d, SUM(fee) as total_fee, COUNT(*) as cnt FROM user_session_log WHERE start_time >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) GROUP BY d ORDER BY d"
+            else: sql = "SELECT DATE(start_time) as d, SUM(fee) as total_fee, COUNT(*) as cnt FROM user_session_log WHERE start_time >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY d ORDER BY d"
             cur.execute(sql)
             rows = cur.fetchall()
-            labels = [str(r['d']) for r in rows]
-            data_fee = [float(r['total_fee'] or 0) for r in rows]
-            data_cnt = [int(r['cnt'] or 0) for r in rows]
-            return jsonify({"labels": labels, "data_fee": data_fee, "data_cnt": data_cnt})
+            return jsonify({"labels": [str(r['d']) for r in rows], "data_fee": [float(r['total_fee'] or 0) for r in rows], "data_cnt": [int(r['cnt'] or 0) for r in rows]})
     finally: conn.close()
 
 @app.route("/api/report/occupancy")
@@ -593,15 +690,11 @@ def api_report_occupancy():
             start_h = s.hour
             duration_hours = int((e - s).total_seconds() / 3600) + 1
             if duration_hours > 24: duration_hours = 24 
-            for i in range(duration_hours):
-                hour_counts[(start_h + i) % 24] += 1
-        avg_occupancy = [round(c / 30.0, 1) for c in hour_counts]
-        return jsonify({"hours": [str(i) for i in range(24)], "avg_occupancy": avg_occupancy})
+            for i in range(duration_hours): hour_counts[(start_h + i) % 24] += 1
+        return jsonify({"hours": [str(i) for i in range(24)], "avg_occupancy": [round(c / 30.0, 1) for c in hour_counts]})
     finally: conn.close()
 
 if __name__ == "__main__":
-    init_db_admin() # 初始化数据库
-    start_mqtt_listener()
-    print("🚀 智能无人网吧系统启动: http://localhost:5000")
+    print("🚀 智能无人网吧 用户门户: http://localhost:5000/portal")
+    print("🚀 智能无人网吧 管理后台: http://localhost:5000")
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
-    
